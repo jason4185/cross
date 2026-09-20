@@ -1,0 +1,38 @@
+.DS_Store
+Thumbs.db
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# JavaScript dependencies and build output
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+.output/
+frontend/.output/
+.vite/
+frontend/.vite/
+.wrangler/
+frontend/.wrangler/
+.vinxi/
+.tanstack/
+.nitro/
+
+# Test and tool caches
+coverage/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs and temporary/editor files
+*.log
+*.tmp
+*.bak
+*.swp
+*~

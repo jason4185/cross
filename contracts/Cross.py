@@ -1,0 +1,1060 @@
+# v0.3.0
+# { "Depends": "py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng" }
+
+import json
+
+import genlayer as gl
+from genlayer import Address, u256
+from genlayer.storage import TreeMap
+
+
+OUTCOME_INDICES = 0
+OUTCOME_FX = 1
+OUTCOME_NONE = 2
+OUTCOME_COUNT = 2
+OUTCOME_NAMES = ("INDICES", "FX")
+ASSET_NAMES = ("SPY", "QQQ", "IWM", "EURUSD", "GBPUSD", "USDJPY")
+INDICES_ASSETS = (0, 1, 2)
+FX_ASSETS = (3, 4, 5)
+
+SOURCE_GATE = "GATE"
+SOURCE_BITGET = "BITGET"
+SOURCES = (SOURCE_GATE, SOURCE_BITGET)
+
+GATE_FUTURES_SYMBOLS = ("SPY_USDT", "QQQ_USDT", "IWM_USDT")
+GATE_TRADFI_SYMBOLS = ("EURUSD", "GBPUSD", "USDJPY")
+BITGET_SYMBOLS = ("SPYUSDT", "QQQUSDT", "IWMUSDT", "EURUSDUSDT", "GBPUSDUSDT", "USDJPYUSDT")
+
+STATE_OPEN = "OPEN"
+STATE_PENDING = "SETTLEMENT_PENDING"
+STATE_SETTLED = "SETTLED"
+STATE_INCONCLUSIVE = "INCONCLUSIVE"
+
+REASON_NONE = ""
+REASON_CONSENSUS = "CONSENSUS"
+REASON_NO_CONSENSUS = "NO_CONSENSUS"
+REASON_EXPIRED = "EXPIRED_NO_CONSENSUS"
+REASON_ZERO_BACKED = "ZERO_BACKED_WINNER"
+
+SOURCE_VALID = "VALID"
+SOURCE_TIE = "TIE"
+SOURCE_UNAVAILABLE = "UNAVAILABLE"
+SOURCE_INVALID = "INVALID"
+
+DURATION_SECONDS = 3600
+SETTLEMENT_GRACE_SECONDS = 60
+SETTLEMENT_RETRY_WINDOW_SECONDS = 18000
+GEN_SCALE = 1_000_000_000_000_000_000
+MIN_BET = GEN_SCALE
+MAX_BET_PER_MARKET = 70 * GEN_SCALE
+PRICE_SCALE = GEN_SCALE
+MAX_RESPONSE_BYTES = 65_536
+MAX_PAGE_SIZE = 50
+MAX_SOURCE_ATTEMPTS = 3
+MAX_MARKETS = 1024
+MAX_POSITIONS = 100_000
+U256_MAX = 2**256 - 1
+
+
+@gl.evm.contract_interface
+class _Recipient:
+    class View:
+        pass
+
+    class Write:
+        pass
+
+
+def _is_u256(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= U256_MAX
+
+
+def _outcome_id(outcome) -> u256:
+    if isinstance(outcome, int) and not isinstance(outcome, bool) and 0 <= outcome < OUTCOME_COUNT:
+        return outcome
+    if isinstance(outcome, str):
+        for index in range(OUTCOME_COUNT):
+            if outcome == OUTCOME_NAMES[index]:
+                return index
+    raise gl.vm.UserError("invalid outcome")
+
+
+def _outcome_name(outcome) -> str:
+    return OUTCOME_NAMES[_outcome_id(outcome)]
+
+
+def _asset_symbol(source: str, asset: u256) -> str:
+    if not isinstance(asset, int) or isinstance(asset, bool) or asset < 0 or asset >= len(ASSET_NAMES):
+        raise gl.vm.UserError("invalid asset")
+    if source == SOURCE_GATE:
+        return GATE_FUTURES_SYMBOLS[asset] if asset < 3 else GATE_TRADFI_SYMBOLS[asset - 3]
+    if source == SOURCE_BITGET:
+        return BITGET_SYMBOLS[asset]
+    raise gl.vm.UserError("invalid source")
+
+
+def _asset_family(source: str, asset: u256) -> str:
+    if source == SOURCE_GATE:
+        return "GATE_FUTURES_USDT" if asset < 3 else "GATE_TRADFI"
+    if source == SOURCE_BITGET:
+        return "BITGET_USDT_FUTURES"
+    raise gl.vm.UserError("invalid source")
+
+
+def _digits(text: str, start: int, end: int) -> int:
+    if start < 0 or end > len(text) or start >= end:
+        return -1
+    value = 0
+    for index in range(start, end):
+        char = text[index]
+        if char < "0" or char > "9":
+            return -1
+        value = value * 10 + ord(char) - ord("0")
+    return value
+
+
+def _days_since_epoch(year: int, month: int, day: int) -> int:
+    adjusted = year - 1 if month <= 2 else year
+    era = adjusted // 400
+    year_of_era = adjusted - era * 400
+    month_piece = month - 3 if month > 2 else month + 9
+    day_of_year = (153 * month_piece + 2) // 5 + day - 1
+    return era * 146097 + year_of_era * 365 + year_of_era // 4 - year_of_era // 100 + day_of_year - 719468
+
+
+def _month_days(year: int, month: int) -> int:
+    if month == 2:
+        return 29 if year % 400 == 0 or (year % 4 == 0 and year % 100 != 0) else 28
+    return 30 if month in (4, 6, 9, 11) else 31
+
+
+def _parse_datetime(value) -> int:
+    text = str(value)
+    if len(text) < 20 or len(text) > 64:
+        return -1
+    if text[4] != "-" or text[7] != "-" or text[10] != "T" or text[13] != ":" or text[16] != ":":
+        return -1
+    year = _digits(text, 0, 4)
+    month = _digits(text, 5, 7)
+    day = _digits(text, 8, 10)
+    hour = _digits(text, 11, 13)
+    minute = _digits(text, 14, 16)
+    second = _digits(text, 17, 19)
+    if year < 1970 or month < 1 or month > 12 or day < 1 or day > _month_days(year, month):
+        return -1
+    if hour > 23 or minute > 59 or second > 59:
+        return -1
+    index = 19
+    if index < len(text) and text[index] == ".":
+        index += 1
+        fraction_start = index
+        for _ in range(18):
+            if index < len(text) and "0" <= text[index] <= "9":
+                index += 1
+            else:
+                break
+        if index == fraction_start or (index < len(text) and "0" <= text[index] <= "9"):
+            return -1
+    if index >= len(text):
+        return -1
+    if text[index] == "Z" and index + 1 == len(text):
+        offset = 0
+    elif text[index] in ("+", "-") and index + 6 == len(text) and text[index + 3] == ":":
+        offset_hour = _digits(text, index + 1, index + 3)
+        offset_minute = _digits(text, index + 4, index + 6)
+        if offset_hour < 0 or offset_minute < 0 or offset_hour > 23 or offset_minute > 59:
+            return -1
+        offset = offset_hour * 3600 + offset_minute * 60
+        if text[index] == "-":
+            offset = -offset
+    else:
+        return -1
+    return _days_since_epoch(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offset
+
+
+def _now() -> int:
+    try:
+        current = _parse_datetime(gl.message.raw["datetime"])
+    except Exception:
+        try:
+            current = _parse_datetime(gl.message_raw["datetime"])
+        except Exception:
+            current = -1
+    if current < 0:
+        raise gl.vm.UserError("invalid transaction time")
+    return current
+
+
+def _is_digits(value: str) -> bool:
+    if not value:
+        return False
+    for char in value:
+        if char < "0" or char > "9":
+            return False
+    return True
+
+
+def _parse_integer(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 0 <= value <= U256_MAX else None
+    if not isinstance(value, str) or len(value) > 40 or not _is_digits(value):
+        return None
+    number = int(value)
+    return number if number <= U256_MAX else None
+
+
+def _parse_price(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, str):
+        text = value
+    else:
+        return None
+    if not text or len(text) > 40 or text.startswith(("+", "-")):
+        return None
+    pieces = text.split(".")
+    if len(pieces) > 2 or not _is_digits(pieces[0]) or len(pieces[0]) > 21:
+        return None
+    fraction = pieces[1] if len(pieces) == 2 else ""
+    if len(pieces) == 2 and not fraction:
+        return None
+    if fraction and (not _is_digits(fraction) or len(fraction) > 18):
+        return None
+    scaled = int(pieces[0]) * PRICE_SCALE + int((fraction + "0" * 18)[:18])
+    if scaled <= 0 or scaled > 10**39:
+        return None
+    canonical_fraction = fraction.rstrip("0")
+    canonical = str(int(pieces[0]))
+    if canonical_fraction:
+        canonical += "." + canonical_fraction
+    return scaled, canonical
+
+
+def _add_u256(left: int, right: int) -> int:
+    if left < 0 or right < 0 or left > U256_MAX or right > U256_MAX - left:
+        raise gl.vm.UserError("u256 addition overflow")
+    return left + right
+
+
+def _mul_u256(left: int, right: int) -> int:
+    if left < 0 or right < 0 or left > U256_MAX or right > U256_MAX:
+        raise gl.vm.UserError("u256 multiplication overflow")
+    if right and left > U256_MAX // right:
+        raise gl.vm.UserError("u256 multiplication overflow")
+    return left * right
+
+
+def _mul_div_u256(numerator: int, multiplier: int, denominator: int) -> int:
+    if numerator < 0 or multiplier < 0 or denominator <= 0 or numerator > denominator:
+        raise gl.vm.UserError("invalid payout arithmetic")
+    quotient = 0
+    remainder = 0
+    for bit_index in range(256):
+        bit = (numerator >> (255 - bit_index)) & 1
+        carry = remainder * 2 + (multiplier if bit else 0)
+        added, remainder = divmod(carry, denominator)
+        quotient = quotient * 2 + added
+    if quotient > U256_MAX:
+        raise gl.vm.UserError("u256 payout overflow")
+    return quotient
+
+
+def _response_json(response):
+    try:
+        status = int(response.status)
+        if status >= 500 or status in (408, 425, 429):
+            return SOURCE_UNAVAILABLE, None
+        body = response.body
+        if not isinstance(body, bytes) or len(body) == 0 or len(body) > MAX_RESPONSE_BYTES:
+            return SOURCE_INVALID, None
+        if status != 200:
+            return SOURCE_INVALID, None
+        return "OK", json.loads(body.decode("utf-8"))
+    except Exception:
+        return SOURCE_INVALID, None
+
+
+def _request_json(url: str):
+    try:
+        response = gl.nondet.web.get(url, headers={"Accept": "application/json"})
+    except Exception:
+        return SOURCE_UNAVAILABLE, None
+    return _response_json(response)
+
+
+def _gate_candle(payload, timestamp: int, symbol: str):
+    if not isinstance(payload, list) or len(payload) != 1:
+        return None
+    row = payload[0]
+    if isinstance(row, list):
+        if len(row) != 7 or _parse_integer(row[0]) != timestamp:
+            return None
+        opening = _parse_price(row[5])
+        high = _parse_price(row[3])
+        low = _parse_price(row[4])
+        closing = _parse_price(row[2])
+    elif isinstance(row, dict):
+        if len(row) > 10 or not all(key in row for key in ("t", "o", "h", "l", "c")):
+            return None
+        if row.get("source", SOURCE_GATE) != SOURCE_GATE or row.get("symbol", symbol) != symbol:
+            return None
+        if row.get("contract", symbol) != symbol or row.get("interval", "1h") != "1h":
+            return None
+        if _parse_integer(row["t"]) != timestamp:
+            return None
+        opening = _parse_price(row["o"])
+        high = _parse_price(row["h"])
+        low = _parse_price(row["l"])
+        closing = _parse_price(row["c"])
+    else:
+        return None
+    if opening is None or high is None or low is None or closing is None:
+        return None
+    return timestamp, opening, closing, symbol, "GATE_FUTURES_USDT"
+
+
+def _gate_tradfi_candle(payload, timestamp: int, symbol: str):
+    if not isinstance(payload, dict) or "data" not in payload or len(payload) > 3:
+        return None
+    data = payload["data"]
+    if not isinstance(data, dict) or "list" not in data or len(data) > 2:
+        return None
+    rows = data["list"]
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        return None
+    row = rows[0]
+    if len(row) != 5 or not all(key in row for key in ("t", "o", "h", "l", "c")):
+        return None
+    if _parse_integer(row["t"]) != timestamp:
+        return None
+    opening = _parse_price(row["o"])
+    high = _parse_price(row["h"])
+    low = _parse_price(row["l"])
+    closing = _parse_price(row["c"])
+    if opening is None or high is None or low is None or closing is None:
+        return None
+    return timestamp, opening, closing, symbol, "GATE_TRADFI"
+
+
+def _bitget_candle(payload, start_ms: int, end_ms: int, symbol: str):
+    if not isinstance(payload, dict) or payload.get("code") != "00000" or "data" not in payload:
+        return None
+    if payload.get("source", SOURCE_BITGET) != SOURCE_BITGET or payload.get("category", "USDT-FUTURES") != "USDT-FUTURES" or payload.get("symbol", symbol) != symbol:
+        return None
+    if payload.get("interval", "1H") != "1H" or payload.get("type", "market") not in ("market", ""):
+        return None
+    rows = payload["data"]
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], list):
+        return None
+    row = rows[0]
+    if len(row) != 7 or _parse_integer(row[0]) != start_ms:
+        return None
+    opening = _parse_price(row[1])
+    high = _parse_price(row[2])
+    low = _parse_price(row[3])
+    closing = _parse_price(row[4])
+    if opening is None or high is None or low is None or closing is None:
+        return None
+    return start_ms, opening, closing, symbol, "BITGET_USDT_FUTURES"
+
+
+def _fetch_candle(source: str, asset: u256, start_seconds: u256, end_seconds: u256):
+    symbol = _asset_symbol(source, asset)
+    start_ms = _mul_u256(start_seconds, 1000)
+    end_ms = _mul_u256(end_seconds, 1000)
+    if source == SOURCE_GATE and asset < 3:
+        url = "https://api.gateio.ws/api/v4/futures/usdt/candlesticks?contract=" + symbol + "&interval=1h&from=" + str(start_seconds) + "&to=" + str(end_seconds - 1)
+        status, payload = _request_json(url)
+        if status != "OK":
+            return status, None
+        row = _gate_candle(payload, start_seconds, symbol)
+    elif source == SOURCE_GATE:
+        url = "https://api.gateio.ws/api/v4/tradfi/symbols/" + symbol + "/klines?kline_type=1h&end_time=" + str(start_seconds) + "&limit=1"
+        status, payload = _request_json(url)
+        if status != "OK":
+            return status, None
+        row = _gate_tradfi_candle(payload, start_seconds, symbol)
+    elif source == SOURCE_BITGET:
+        url = "https://api.bitget.com/api/v3/market/candles?category=USDT-FUTURES&symbol=" + symbol + "&interval=1H&startTime=" + str(start_ms) + "&endTime=" + str(end_ms - 1) + "&limit=1"
+        status, payload = _request_json(url)
+        if status != "OK":
+            return status, None
+        row = _bitget_candle(payload, start_ms, end_ms, symbol)
+    else:
+        return SOURCE_INVALID, None
+    return ("OK", row) if row is not None else (SOURCE_INVALID, None)
+
+
+def _return_parts(open_scaled: int, close_scaled: int, inverse: bool):
+    if inverse:
+        return open_scaled - close_scaled, close_scaled
+    return close_scaled - open_scaled, open_scaled
+
+
+def _score(rows, indexes):
+    first, second, third = (rows[indexes[0]], rows[indexes[1]], rows[indexes[2]])
+    n1, d1 = first["_return_numerator"], first["_return_denominator"]
+    n2, d2 = second["_return_numerator"], second["_return_denominator"]
+    n3, d3 = third["_return_numerator"], third["_return_denominator"]
+    return n1 * d2 * d3 + n2 * d1 * d3 + n3 * d1 * d2, 3 * d1 * d2 * d3
+
+
+def _compare_scores(left, right) -> int:
+    left_value = left[0] * right[1]
+    right_value = right[0] * left[1]
+    return 1 if left_value > right_value else -1 if left_value < right_value else 0
+
+
+def _empty_asset(source: str, asset: u256, start: u256, end: u256) -> dict:
+    return {
+        "asset": ASSET_NAMES[asset], "asset_id": asset, "symbol": _asset_symbol(source, asset),
+        "market_family": _asset_family(source, asset), "market_start": start, "market_end": end,
+        "candle_timestamp": "", "timestamp_unit": "", "interval": "1h", "open": "", "close": "",
+        "return_direction": "", "return_numerator": "", "return_denominator": "", "valid": False,
+    }
+
+
+def _empty_source_result(source: str, start: u256, end: u256, status: str) -> dict:
+    return {
+        "source": source, "market_start": start, "market_end": end, "interval": "1h", "source_status": status,
+        "source_winner": "", "source_winner_id": OUTCOME_NONE, "indices_score_numerator": "",
+        "indices_score_denominator": "", "fx_score_numerator": "", "fx_score_denominator": "",
+        "assets": [_empty_asset(source, asset, start, end) for asset in range(len(ASSET_NAMES))],
+    }
+
+
+def _source_once(source: str, start: u256, end: u256) -> dict:
+    rows = []
+    for asset in range(len(ASSET_NAMES)):
+        status, candle = _fetch_candle(source, asset, start, end)
+        if status != "OK":
+            return _empty_source_result(source, start, end, status)
+        timestamp, opening, closing, symbol, family = candle
+        opening_scaled, opening_text = opening
+        closing_scaled, closing_text = closing
+        inverse = asset == 5
+        numerator, denominator = _return_parts(opening_scaled, closing_scaled, inverse)
+        rows.append({
+            "asset": ASSET_NAMES[asset], "asset_id": asset, "symbol": symbol, "market_family": family,
+            "market_start": start, "market_end": end, "candle_timestamp": str(timestamp),
+            "timestamp_unit": "s" if source == SOURCE_GATE else "ms", "interval": "1h",
+            "open": opening_text, "close": closing_text, "return_direction": "inverse_price" if inverse else "normal",
+            "return_numerator": str(numerator), "return_denominator": str(denominator), "valid": True,
+            "_return_numerator": numerator, "_return_denominator": denominator,
+        })
+    indices_score = _score(rows, INDICES_ASSETS)
+    fx_score = _score(rows, FX_ASSETS)
+    comparison = _compare_scores(indices_score, fx_score)
+    winner = OUTCOME_INDICES if comparison > 0 else OUTCOME_FX if comparison < 0 else OUTCOME_NONE
+    for row in rows:
+        del row["_return_numerator"]
+        del row["_return_denominator"]
+    return {
+        "source": source, "market_start": start, "market_end": end, "interval": "1h",
+        "source_status": SOURCE_TIE if winner == OUTCOME_NONE else SOURCE_VALID,
+        "source_winner": "" if winner == OUTCOME_NONE else _outcome_name(winner), "source_winner_id": winner,
+        "indices_score_numerator": str(indices_score[0]), "indices_score_denominator": str(indices_score[1]),
+        "fx_score_numerator": str(fx_score[0]), "fx_score_denominator": str(fx_score[1]), "assets": rows,
+    }
+
+
+def _fetch_source(source: str, start: u256, end: u256) -> dict:
+    for _ in range(MAX_SOURCE_ATTEMPTS):
+        try:
+            result = _source_once(source, start, end)
+        except Exception:
+            result = _empty_source_result(source, start, end, SOURCE_INVALID)
+        if result["source_status"] != SOURCE_UNAVAILABLE:
+            return result
+    return _empty_source_result(source, start, end, SOURCE_UNAVAILABLE)
+
+
+def _source_result(proposal: dict, source: str):
+    results = proposal.get("source_results") if isinstance(proposal, dict) else None
+    if not isinstance(results, list) or len(results) != len(SOURCES):
+        return None
+    for index in range(len(SOURCES)):
+        if SOURCES[index] == source and isinstance(results[index], dict) and results[index].get("source") == source:
+            return results[index]
+    return None
+
+
+def _consensus_winner(results: list[dict]) -> int:
+    if len(results) != len(SOURCES):
+        return OUTCOME_NONE
+    first, second = results[0], results[1]
+    first_vote = first.get("source_winner_id", OUTCOME_NONE) if first.get("source_status") == SOURCE_VALID else OUTCOME_NONE
+    second_vote = second.get("source_winner_id", OUTCOME_NONE) if second.get("source_status") == SOURCE_VALID else OUTCOME_NONE
+    if _is_u256(first_vote) and first_vote < OUTCOME_COUNT and first_vote == second_vote:
+        return first_vote
+    return OUTCOME_NONE
+
+
+def _evidence_key(evidence: dict, source: str, start: u256, end: u256):
+    if not isinstance(evidence, dict) or evidence.get("source") != source or evidence.get("market_start") != start or evidence.get("market_end") != end or evidence.get("interval") != "1h":
+        return None
+    status = evidence.get("source_status")
+    winner = evidence.get("source_winner")
+    winner_id = evidence.get("source_winner_id", OUTCOME_NONE)
+    if status not in (SOURCE_VALID, SOURCE_TIE, SOURCE_UNAVAILABLE, SOURCE_INVALID) or not isinstance(winner, str) or not _is_u256(winner_id) or winner_id > OUTCOME_NONE:
+        return None
+    if status == SOURCE_VALID and (winner_id >= OUTCOME_COUNT or winner != _outcome_name(winner_id)):
+        return None
+    if status != SOURCE_VALID and (winner != "" or winner_id != OUTCOME_NONE):
+        return None
+    rows = evidence.get("assets")
+    if not isinstance(rows, list) or len(rows) != len(ASSET_NAMES):
+        return None
+    score_keys = ("indices_score_numerator", "indices_score_denominator", "fx_score_numerator", "fx_score_denominator")
+    if status in (SOURCE_VALID, SOURCE_TIE):
+        if not all(isinstance(evidence.get(key), str) for key in score_keys):
+            return None
+        parsed_rows = []
+    else:
+        if any(evidence.get(key) != "" for key in score_keys):
+            return None
+        parsed_rows = None
+    parts = [source, str(start), str(end), "1h", status, winner, str(winner_id)]
+    for asset in range(len(ASSET_NAMES)):
+        row = rows[asset]
+        expected_family = _asset_family(source, asset)
+        if not isinstance(row, dict) or row.get("asset_id") != asset or row.get("asset") != ASSET_NAMES[asset] or row.get("symbol") != _asset_symbol(source, asset) or row.get("market_family") != expected_family:
+            return None
+        if row.get("market_start") != start or row.get("market_end") != end or row.get("interval") != "1h":
+            return None
+        fields = (row.get("candle_timestamp"), row.get("timestamp_unit"), row.get("open"), row.get("close"), row.get("return_direction"), row.get("return_numerator"), row.get("return_denominator"))
+        if not all(isinstance(value, str) for value in fields) or not isinstance(row.get("valid"), bool):
+            return None
+        valid = status in (SOURCE_VALID, SOURCE_TIE)
+        if row["valid"] != valid:
+            return None
+        if valid:
+            expected_timestamp = str(start if source == SOURCE_GATE else _mul_u256(start, 1000))
+            if row["candle_timestamp"] != expected_timestamp or row["timestamp_unit"] != ("s" if source == SOURCE_GATE else "ms"):
+                return None
+            opening = _parse_price(row["open"])
+            closing = _parse_price(row["close"])
+            if opening is None or closing is None or row["open"] != opening[1] or row["close"] != closing[1]:
+                return None
+            inverse = asset == 5
+            numerator, denominator = _return_parts(opening[0], closing[0], inverse)
+            if row["return_direction"] != ("inverse_price" if inverse else "normal") or row["return_numerator"] != str(numerator) or row["return_denominator"] != str(denominator):
+                return None
+            parsed_rows.append({"_return_numerator": numerator, "_return_denominator": denominator})
+        elif any(value != "" for value in fields):
+            return None
+        parts.extend([str(row["asset_id"]), row["asset"], row["symbol"], row["market_family"], row["candle_timestamp"], row["timestamp_unit"], row["open"], row["close"], row["return_direction"], row["return_numerator"], row["return_denominator"], str(row["valid"])])
+    if parsed_rows is not None:
+        indices_score = _score(parsed_rows, INDICES_ASSETS)
+        fx_score = _score(parsed_rows, FX_ASSETS)
+        if evidence["indices_score_numerator"] != str(indices_score[0]) or evidence["indices_score_denominator"] != str(indices_score[1]) or evidence["fx_score_numerator"] != str(fx_score[0]) or evidence["fx_score_denominator"] != str(fx_score[1]):
+            return None
+        comparison = _compare_scores(indices_score, fx_score)
+        expected_status = SOURCE_TIE if comparison == 0 else SOURCE_VALID
+        expected_winner = OUTCOME_NONE if comparison == 0 else OUTCOME_INDICES if comparison > 0 else OUTCOME_FX
+        expected_name = "" if expected_winner == OUTCOME_NONE else _outcome_name(expected_winner)
+        if status != expected_status or winner_id != expected_winner or winner != expected_name:
+            return None
+    return "\x1f".join(parts)
+
+
+def _proposal_valid(proposal: dict, start: u256, end: u256) -> bool:
+    if not isinstance(proposal, dict) or not isinstance(proposal.get("source_results"), list) or len(proposal["source_results"]) != len(SOURCES):
+        return False
+    results = proposal["source_results"]
+    for index in range(len(SOURCES)):
+        if _evidence_key(results[index], SOURCES[index], start, end) is None:
+            return False
+    winner = _consensus_winner(results)
+    expected_count = 2 if winner != OUTCOME_NONE else 0
+    return _is_u256(proposal.get("consensus_winner")) and proposal.get("consensus_winner") == winner and _is_u256(proposal.get("consensus_count")) and proposal.get("consensus_count") == expected_count
+
+
+def _financial_winner(proposal: dict) -> int:
+    if isinstance(proposal, dict) and proposal.get("consensus_count") == 2:
+        winner = proposal.get("consensus_winner", OUTCOME_NONE)
+        if _is_u256(winner) and winner < OUTCOME_COUNT:
+            return winner
+    return OUTCOME_NONE
+
+
+def _common_valid_votes(first: dict, second: dict, winner: int) -> int:
+    count = 0
+    for source in SOURCES:
+        first_result = _source_result(first, source)
+        second_result = _source_result(second, source)
+        if first_result is not None and second_result is not None and first_result.get("source_status") == SOURCE_VALID and second_result.get("source_status") == SOURCE_VALID and first_result.get("source_winner_id") == winner and second_result.get("source_winner_id") == winner:
+            count += 1
+    return count
+
+
+def _same_source_evidence(first: dict, second: dict, source: str, start: u256, end: u256) -> bool:
+    first_key = _evidence_key(first, source, start, end)
+    second_key = _evidence_key(second, source, start, end)
+    return first_key is not None and first_key == second_key
+
+
+def _settlement_proposal(start: u256, end: u256) -> dict:
+    def leader_fn():
+        results = [_fetch_source(source, start, end) for source in SOURCES]
+        winner = _consensus_winner(results)
+        return {"source_results": results, "consensus_winner": winner, "consensus_count": 2 if winner != OUTCOME_NONE else 0}
+
+    def validator_fn(leaders_result) -> bool:
+        try:
+            if not isinstance(leaders_result, gl.vm.Return) or not isinstance(leaders_result.calldata, dict):
+                return False
+            leader_proposal = leaders_result.calldata
+            if not _proposal_valid(leader_proposal, start, end):
+                return False
+            validator_proposal = leader_fn()
+            if not _proposal_valid(validator_proposal, start, end):
+                return False
+            for source in SOURCES:
+                if not _same_source_evidence(_source_result(leader_proposal, source), _source_result(validator_proposal, source), source, start, end):
+                    return False
+            leader_winner = _financial_winner(leader_proposal)
+            validator_winner = _financial_winner(validator_proposal)
+            if leader_winner != validator_winner:
+                return False
+            return leader_winner == OUTCOME_NONE or _common_valid_votes(leader_proposal, validator_proposal, leader_winner) == 2
+        except Exception:
+            return False
+
+    return gl.vm.run_nondet(leader_fn, validator_fn)
+
+
+class Cross(gl.contract.Contract):
+    market_count: u256
+    position_count: u256
+    market_start_seconds: TreeMap[u256, u256]
+    market_end_seconds: TreeMap[u256, u256]
+    market_state: TreeMap[u256, str]
+    market_winner: TreeMap[u256, u256]
+    market_reason: TreeMap[u256, str]
+    market_creation_keys: TreeMap[str, u256]
+    market_source_evidence: TreeMap[str, str]
+    market_pool: TreeMap[u256, u256]
+    market_winning_pool: TreeMap[u256, u256]
+    market_claimed_pool: TreeMap[u256, u256]
+    market_claimed_winning_stake: TreeMap[u256, u256]
+    market_refunded_pool: TreeMap[u256, u256]
+    market_settlement_deadline: TreeMap[u256, u256]
+    outcome_pool: TreeMap[str, u256]
+    bettor_outcome: TreeMap[str, u256]
+    bettor_stake: TreeMap[str, u256]
+    bettor_claimed: TreeMap[str, bool]
+    bettor_refunded: TreeMap[str, bool]
+    user_market_count: TreeMap[str, u256]
+    user_market_index: TreeMap[str, u256]
+
+    def __init__(self):
+        self.market_count = 0
+        self.position_count = 0
+
+    def _require_market(self, market_id: u256) -> None:
+        if not _is_u256(market_id) or market_id == 0 or market_id > self.market_count or market_id not in self.market_start_seconds:
+            raise gl.vm.UserError("market not found")
+
+    def _outcome_key(self, market_id: u256, outcome: u256) -> str:
+        return str(market_id) + ":" + str(outcome)
+
+    def _position_key(self, market_id: u256, user: Address) -> str:
+        return str(market_id) + ":" + user.as_hex
+
+    def _user_market_key(self, user: Address, index: u256) -> str:
+        return user.as_hex + ":" + str(index)
+
+    def _source_key(self, market_id: u256, source: str) -> str:
+        return str(market_id) + ":" + source
+
+    def _send_value(self, recipient: Address, amount: u256) -> None:
+        _Recipient(recipient).emit_transfer(value=amount)
+
+    def _market_preview(self, market_id: u256) -> dict:
+        self._require_market(market_id)
+        state = self.market_state[market_id]
+        total_pool = self.market_pool.get(market_id, 0)
+        indices_pool = self.outcome_pool.get(self._outcome_key(market_id, OUTCOME_INDICES), 0)
+        fx_pool = self.outcome_pool.get(self._outcome_key(market_id, OUTCOME_FX), 0)
+        claimed_pool = self.market_claimed_pool.get(market_id, 0)
+        refunded_pool = self.market_refunded_pool.get(market_id, 0)
+        if claimed_pool > total_pool or refunded_pool > total_pool:
+            raise gl.vm.UserError("market liability overflow")
+        consumed = claimed_pool if state == STATE_SETTLED else refunded_pool if state == STATE_INCONCLUSIVE else 0
+        winner = self.market_winner[market_id]
+        now_seconds = _now()
+        market_start = self.market_start_seconds[market_id]
+        market_end = self.market_end_seconds[market_id]
+        settlement_ready = _add_u256(market_end, SETTLEMENT_GRACE_SECONDS)
+        deadline = self.market_settlement_deadline[market_id]
+        return {
+            "id": market_id, "market_id": market_id, "outcomes": list(OUTCOME_NAMES),
+            "indices_basket": list(ASSET_NAMES[:3]), "fx_basket": list(ASSET_NAMES[3:]),
+            "market_start": market_start, "market_end": market_end, "betting_close": market_start,
+            "duration_seconds": DURATION_SECONDS, "state": state,
+            "winner": "" if winner == OUTCOME_NONE else _outcome_name(winner),
+            "reason": self.market_reason.get(market_id, REASON_NONE), "market_pool": total_pool,
+            "total_pool": total_pool, "indices_pool": indices_pool, "fx_pool": fx_pool,
+            "outcome_pools": {"INDICES": indices_pool, "FX": fx_pool},
+            "betting_open": state == STATE_OPEN and now_seconds < market_start,
+            "settlement_ready": settlement_ready,
+            "settlement_available": state in (STATE_OPEN, STATE_PENDING) and settlement_ready <= now_seconds < deadline,
+            "deadline_expired": state in (STATE_OPEN, STATE_PENDING) and now_seconds >= deadline,
+            "settlement_deadline": deadline, "winning_pool": self.market_winning_pool.get(market_id, 0),
+            "claimed_pool": claimed_pool, "claimed_winning_stake": self.market_claimed_winning_stake.get(market_id, 0),
+            "refunded_pool": refunded_pool, "remaining_pool": total_pool - consumed,
+        }
+
+    def _position_view(self, market_id: u256, user: Address) -> dict:
+        self._require_market(market_id)
+        key = self._position_key(market_id, user)
+        selected = self.bettor_outcome.get(key, OUTCOME_NONE)
+        has_position = selected != OUTCOME_NONE
+        stake = self.bettor_stake.get(key, 0)
+        state = self.market_state[market_id]
+        claimed = self.bettor_claimed.get(key, False)
+        refunded = self.bettor_refunded.get(key, False)
+        winner = self.market_winner[market_id]
+        now_seconds = _now()
+        market_start = self.market_start_seconds[market_id]
+        market_end = self.market_end_seconds[market_id]
+        settlement_ready = _add_u256(market_end, SETTLEMENT_GRACE_SECONDS)
+        total_pool = self.market_pool.get(market_id, 0)
+        indices_pool = self.outcome_pool.get(self._outcome_key(market_id, OUTCOME_INDICES), 0)
+        fx_pool = self.outcome_pool.get(self._outcome_key(market_id, OUTCOME_FX), 0)
+        winning_pool = self.market_winning_pool.get(market_id, 0)
+        claimed_pool = self.market_claimed_pool.get(market_id, 0)
+        refunded_pool = self.market_refunded_pool.get(market_id, 0)
+        position_won = state == STATE_SETTLED and has_position and selected == winner
+        position_lost = state == STATE_SETTLED and has_position and selected != winner
+        claimable = 0
+        claim_available = False
+        if position_won and not claimed:
+            claimed_stake = self.market_claimed_winning_stake.get(market_id, 0)
+            new_stake = _add_u256(claimed_stake, stake)
+            if winning_pool > 0 and claimed_stake <= winning_pool and claimed_pool <= total_pool and new_stake <= winning_pool:
+                claimable = total_pool - claimed_pool if new_stake == winning_pool else _mul_div_u256(stake, total_pool, winning_pool)
+                claim_available = claimable > 0
+        refund_available = state == STATE_INCONCLUSIVE and has_position and stake > 0 and not refunded
+        if refund_available:
+            claimable = stake
+        return {
+            "market_id": market_id, "market_start": market_start, "market_end": market_end,
+            "settlement_ready": settlement_ready, "settlement_deadline": self.market_settlement_deadline[market_id],
+            "has_position": has_position, "selected_outcome": "" if not has_position else _outcome_name(selected),
+            "user_outcome": "" if not has_position else _outcome_name(selected), "total_stake": stake,
+            "user_stake": stake, "market_state": state, "state": state,
+            "winner": "" if winner == OUTCOME_NONE else _outcome_name(winner),
+            "reason": self.market_reason.get(market_id, REASON_NONE), "market_pool": total_pool,
+            "indices_pool": indices_pool, "fx_pool": fx_pool, "winning_pool": winning_pool,
+            "claimed_pool": claimed_pool, "refunded_pool": refunded_pool,
+            "can_top_up": state == STATE_OPEN and now_seconds < market_start and has_position,
+            "position_won": position_won, "position_lost": position_lost, "claim_available": claim_available,
+            "refund_available": refund_available, "already_claimed": claimed, "claimed": claimed,
+            "refunded": refunded, "claimable_amount": claimable,
+            "claim_type": "REFUND" if refund_available else "WINNINGS" if claim_available else "NONE",
+        }
+
+    def _page_bounds(self, offset: u256, limit: u256, count: u256) -> tuple[int, int]:
+        if not _is_u256(offset) or not _is_u256(limit) or limit > MAX_PAGE_SIZE:
+            raise gl.vm.UserError("page limit exceeded")
+        if offset >= count or limit == 0:
+            return 0, 0
+        return offset, min(count, _add_u256(offset, limit))
+
+    def _market_page(self, cursor: u256, limit: u256, open_only: bool) -> dict:
+        if not _is_u256(cursor) or not _is_u256(limit) or limit > MAX_PAGE_SIZE:
+            raise gl.vm.UserError("page limit exceeded")
+        count = self.market_count
+        if cursor >= count or limit == 0:
+            return {"items": [], "next_cursor": 0, "has_more": False}
+        end = min(count, _add_u256(cursor, limit))
+        items = []
+        for index in range(cursor, end):
+            market = self._market_preview(count - index)
+            if not open_only or market["betting_open"]:
+                items.append(market)
+        has_more = end < count
+        return {"items": items, "next_cursor": end if has_more else 0, "has_more": has_more}
+
+    def _user_position_page(self, user: Address, cursor: u256, limit: u256) -> dict:
+        if not _is_u256(cursor) or not _is_u256(limit) or limit > MAX_PAGE_SIZE:
+            raise gl.vm.UserError("page limit exceeded")
+        count = self.user_market_count.get(user.as_hex, 0)
+        if cursor >= count or limit == 0:
+            return {"items": [], "next_cursor": 0, "has_more": False}
+        end = min(count, _add_u256(cursor, limit))
+        items = [self._position_view(self.user_market_index[self._user_market_key(user, count - index - 1)], user) for index in range(cursor, end)]
+        return {"items": items, "next_cursor": end if end < count else 0, "has_more": end < count}
+
+    @gl.public.view
+    def get_config(self) -> dict:
+        return {
+            "protocol": "CROSS V1", "outcomes": list(OUTCOME_NAMES), "indices_basket": list(ASSET_NAMES[:3]),
+            "fx_basket": list(ASSET_NAMES[3:]), "sources": list(SOURCES),
+            "symbols_by_source": {SOURCE_GATE: list(GATE_FUTURES_SYMBOLS + GATE_TRADFI_SYMBOLS), SOURCE_BITGET: list(BITGET_SYMBOLS)},
+            "source_api_families": {SOURCE_GATE: ["futures/usdt/candlesticks", "tradfi/symbols/{symbol}/klines"], SOURCE_BITGET: ["market/candles"]},
+            "duration_seconds": DURATION_SECONDS, "minimum_bet": MIN_BET,
+            "maximum_bet_per_wallet_per_market": MAX_BET_PER_MARKET, "consensus_threshold": 2,
+            "consensus_sources": 2, "timezone": "UTC", "price_precision": 18, "return_precision": 18,
+            "return_calculation": "exact rational arithmetic; normal=(close-open)/open; USDJPY=(open/close)-1",
+            "basket_weighting": "equal arithmetic mean", "settlement_grace_seconds": SETTLEMENT_GRACE_SECONDS,
+            "settlement_retry_window_seconds": SETTLEMENT_RETRY_WINDOW_SECONDS, "settlement_deadline_anchor": "settlement_ready",
+            "payout_rounding": "floor; final winning claimant receives remaining pool",
+            "zero_backed_winner_behavior": "inconclusive with original-stake refunds",
+            "source_evidence_semantics": "each source independently fetches all six exact-window candles; sources are never mixed",
+            "max_page_size": MAX_PAGE_SIZE, "max_markets": MAX_MARKETS, "max_positions": MAX_POSITIONS,
+        }
+
+    @gl.public.view
+    def outcomes(self) -> list[str]:
+        return list(OUTCOME_NAMES)
+
+    @gl.public.view
+    def get_market(self, market_id: u256) -> dict:
+        return self._market_preview(market_id)
+
+    @gl.public.view
+    def get_markets(self, cursor: u256, limit: u256) -> dict:
+        return self._market_page(cursor, limit, False)
+
+    @gl.public.view
+    def get_open_markets(self, cursor: u256, limit: u256) -> dict:
+        return self._market_page(cursor, limit, True)
+
+    @gl.public.view
+    def get_market_count(self) -> u256:
+        return self.market_count
+
+    @gl.public.view
+    def get_my_position(self, market_id: u256) -> dict:
+        return self._position_view(market_id, gl.message.sender_address)
+
+    @gl.public.view
+    def get_my_market_count(self) -> u256:
+        return self.user_market_count.get(gl.message.sender_address.as_hex, 0)
+
+    @gl.public.view
+    def get_my_positions(self, offset: u256, limit: u256) -> list[dict]:
+        user = gl.message.sender_address
+        count = self.user_market_count.get(user.as_hex, 0)
+        start, end = self._page_bounds(offset, limit, count)
+        return [self._position_view(self.user_market_index[self._user_market_key(user, count - index - 1)], user) for index in range(start, end)]
+
+    @gl.public.view
+    def get_user_positions(self, user: Address, cursor: u256, limit: u256) -> dict:
+        return self._user_position_page(user, cursor, limit)
+
+    @gl.public.view
+    def get_my_claimable_markets(self, offset: u256, limit: u256) -> list[dict]:
+        user = gl.message.sender_address
+        page = self._user_position_page(user, offset, limit)
+        return [position for position in page["items"] if position["claim_available"] or position["refund_available"]]
+
+    @gl.public.view
+    def get_market_by_start(self, market_start: u256) -> dict:
+        if not _is_u256(market_start) or market_start % DURATION_SECONDS != 0:
+            raise gl.vm.UserError("market start must be exact UTC hour")
+        key = str(market_start)
+        if key not in self.market_creation_keys:
+            raise gl.vm.UserError("market not found")
+        return self._market_preview(self.market_creation_keys[key])
+
+    @gl.public.view
+    def get_source_evidence(self, market_id: u256, source: str) -> dict:
+        self._require_market(market_id)
+        if source not in SOURCES:
+            raise gl.vm.UserError("invalid source")
+        key = self._source_key(market_id, source)
+        if key not in self.market_source_evidence:
+            raise gl.vm.UserError("source evidence unavailable")
+        evidence = json.loads(self.market_source_evidence[key])
+        evidence["evidence_semantics"] = "EXACT_SOURCE_DATA_VALIDATOR_MATCH"
+        evidence["cross_source_price_comparison"] = False
+        return evidence
+
+    @gl.public.view
+    def get_betting_state(self, market_id: u256) -> dict:
+        self._require_market(market_id)
+        key = self._position_key(market_id, gl.message.sender_address)
+        selected = self.bettor_outcome.get(key, OUTCOME_NONE)
+        return {
+            "total_market_pool": self.market_pool.get(market_id, 0),
+            "outcome_stakes": {_outcome_name(i): self.outcome_pool.get(self._outcome_key(market_id, i), 0) for i in range(OUTCOME_COUNT)},
+            "bettor_outcome": "" if selected == OUTCOME_NONE else _outcome_name(selected),
+            "bettor_stake": self.bettor_stake.get(key, 0), "claimed": self.bettor_claimed.get(key, False),
+            "refunded": self.bettor_refunded.get(key, False), "winning_pool": self.market_winning_pool.get(market_id, 0),
+            "claimed_pool": self.market_claimed_pool.get(market_id, 0),
+            "claimed_winning_stake": self.market_claimed_winning_stake.get(market_id, 0),
+            "refunded_pool": self.market_refunded_pool.get(market_id, 0),
+        }
+
+    @gl.public.write
+    def create_market(self, market_start: u256) -> u256:
+        if not _is_u256(market_start) or market_start % DURATION_SECONDS != 0:
+            raise gl.vm.UserError("market start must be exact UTC hour")
+        now_seconds = _now()
+        expected_start = _mul_u256(_add_u256(now_seconds // DURATION_SECONDS, 1), DURATION_SECONDS)
+        if market_start != expected_start:
+            raise gl.vm.UserError("market start must be next UTC hour")
+        if self.market_count >= MAX_MARKETS:
+            raise gl.vm.UserError("maximum market count reached")
+        key = str(market_start)
+        if key in self.market_creation_keys:
+            raise gl.vm.UserError("market already exists")
+        market_id = _add_u256(self.market_count, 1)
+        end_seconds = _add_u256(market_start, DURATION_SECONDS)
+        settlement_ready = _add_u256(end_seconds, SETTLEMENT_GRACE_SECONDS)
+        deadline = _add_u256(settlement_ready, SETTLEMENT_RETRY_WINDOW_SECONDS)
+        _mul_u256(end_seconds, 1000)
+        self.market_count = market_id
+        self.market_start_seconds[market_id] = market_start
+        self.market_end_seconds[market_id] = end_seconds
+        self.market_state[market_id] = STATE_OPEN
+        self.market_winner[market_id] = OUTCOME_NONE
+        self.market_reason[market_id] = REASON_NONE
+        self.market_pool[market_id] = 0
+        self.market_winning_pool[market_id] = 0
+        self.market_claimed_pool[market_id] = 0
+        self.market_claimed_winning_stake[market_id] = 0
+        self.market_refunded_pool[market_id] = 0
+        self.market_settlement_deadline[market_id] = deadline
+        self.market_creation_keys[key] = market_id
+        return market_id
+
+    @gl.public.write.payable
+    def place_bet(self, market_id: u256, outcome: str) -> None:
+        if not isinstance(outcome, str):
+            raise gl.vm.UserError("outcome must be a string")
+        self._require_market(market_id)
+        if self.market_state[market_id] != STATE_OPEN:
+            raise gl.vm.UserError("market is not open")
+        if _now() >= self.market_start_seconds[market_id]:
+            raise gl.vm.UserError("betting is closed")
+        outcome_id = _outcome_id(outcome)
+        amount = gl.message.value
+        if not _is_u256(amount) or amount < MIN_BET:
+            raise gl.vm.UserError("minimum bet is 1 GEN")
+        key = self._position_key(market_id, gl.message.sender_address)
+        selected = self.bettor_outcome.get(key, OUTCOME_NONE)
+        if selected != OUTCOME_NONE and selected != outcome_id:
+            raise gl.vm.UserError("wallet outcome already selected")
+        old_stake = self.bettor_stake.get(key, 0)
+        if old_stake > MAX_BET_PER_MARKET or amount > MAX_BET_PER_MARKET - old_stake:
+            raise gl.vm.UserError("maximum cumulative stake is 70 GEN")
+        if selected == OUTCOME_NONE:
+            if self.position_count >= MAX_POSITIONS:
+                raise gl.vm.UserError("maximum position count reached")
+            user = gl.message.sender_address
+            user_count = self.user_market_count.get(user.as_hex, 0)
+            if user_count >= MAX_POSITIONS:
+                raise gl.vm.UserError("maximum user market count reached")
+            self.position_count = _add_u256(self.position_count, 1)
+            self.user_market_index[self._user_market_key(user, user_count)] = market_id
+            self.user_market_count[user.as_hex] = _add_u256(user_count, 1)
+        new_stake = _add_u256(old_stake, amount)
+        self.bettor_outcome[key] = outcome_id
+        self.bettor_stake[key] = new_stake
+        outcome_key = self._outcome_key(market_id, outcome_id)
+        self.outcome_pool[outcome_key] = _add_u256(self.outcome_pool.get(outcome_key, 0), amount)
+        self.market_pool[market_id] = _add_u256(self.market_pool.get(market_id, 0), amount)
+
+    @gl.public.write
+    def claim(self, market_id: u256) -> None:
+        self._require_market(market_id)
+        if self.market_state[market_id] != STATE_SETTLED:
+            raise gl.vm.UserError("market is not settled")
+        key = self._position_key(market_id, gl.message.sender_address)
+        if self.bettor_claimed.get(key, False):
+            raise gl.vm.UserError("payout already claimed")
+        if self.bettor_refunded.get(key, False):
+            raise gl.vm.UserError("position already refunded")
+        if self.bettor_outcome.get(key, OUTCOME_NONE) != self.market_winner[market_id]:
+            raise gl.vm.UserError("not a winning bettor")
+        stake = self.bettor_stake.get(key, 0)
+        winning_pool = self.market_winning_pool.get(market_id, 0)
+        if stake <= 0 or winning_pool <= 0:
+            raise gl.vm.UserError("winning position is empty")
+        total_pool = self.market_pool.get(market_id, 0)
+        claimed_pool = self.market_claimed_pool.get(market_id, 0)
+        claimed_stake = self.market_claimed_winning_stake.get(market_id, 0)
+        if claimed_pool > total_pool or claimed_stake > winning_pool:
+            raise gl.vm.UserError("claimed accounting exceeds pool")
+        new_claimed_stake = _add_u256(claimed_stake, stake)
+        if new_claimed_stake > winning_pool:
+            raise gl.vm.UserError("winning stake accounting exceeds pool")
+        payout = total_pool - claimed_pool if new_claimed_stake == winning_pool else _mul_div_u256(stake, total_pool, winning_pool)
+        if payout <= 0 or payout > total_pool - claimed_pool:
+            raise gl.vm.UserError("payout is empty")
+        self.bettor_claimed[key] = True
+        self.market_claimed_pool[market_id] = _add_u256(claimed_pool, payout)
+        self.market_claimed_winning_stake[market_id] = new_claimed_stake
+        self._send_value(gl.message.sender_address, payout)
+
+    @gl.public.write
+    def claim_refund(self, market_id: u256) -> None:
+        self._require_market(market_id)
+        if self.market_state[market_id] != STATE_INCONCLUSIVE:
+            raise gl.vm.UserError("market is not inconclusive")
+        key = self._position_key(market_id, gl.message.sender_address)
+        if self.bettor_refunded.get(key, False):
+            raise gl.vm.UserError("refund already claimed")
+        if self.bettor_claimed.get(key, False):
+            raise gl.vm.UserError("position already claimed")
+        stake = self.bettor_stake.get(key, 0)
+        if stake <= 0:
+            raise gl.vm.UserError("no bettor stake")
+        total_pool = self.market_pool.get(market_id, 0)
+        refunded_pool = self.market_refunded_pool.get(market_id, 0)
+        if refunded_pool > total_pool or stake > total_pool - refunded_pool:
+            raise gl.vm.UserError("refund exceeds remaining pool")
+        self.bettor_refunded[key] = True
+        self.market_refunded_pool[market_id] = _add_u256(refunded_pool, stake)
+        self._send_value(gl.message.sender_address, stake)
+
+    @gl.public.write
+    def settle_market(self, market_id: u256) -> str:
+        self._require_market(market_id)
+        state = self.market_state[market_id]
+        if state not in (STATE_OPEN, STATE_PENDING):
+            raise gl.vm.UserError("market is not open")
+        now_seconds = _now()
+        end_seconds = self.market_end_seconds[market_id]
+        deadline = self.market_settlement_deadline[market_id]
+        if now_seconds < end_seconds:
+            raise gl.vm.UserError("market has not ended")
+        settlement_ready = _add_u256(end_seconds, SETTLEMENT_GRACE_SECONDS)
+        if now_seconds < settlement_ready:
+            raise gl.vm.UserError("settlement is not ready; candle finalization grace is active")
+        if now_seconds >= deadline:
+            self.market_state[market_id] = STATE_INCONCLUSIVE
+            self.market_winner[market_id] = OUTCOME_NONE
+            self.market_reason[market_id] = REASON_EXPIRED
+            return STATE_INCONCLUSIVE
+        proposal = _settlement_proposal(self.market_start_seconds[market_id], end_seconds)
+        results = proposal["source_results"]
+        for index in range(len(SOURCES)):
+            self.market_source_evidence[self._source_key(market_id, SOURCES[index])] = json.dumps(results[index], separators=(",", ":"), sort_keys=True)
+        winner = _financial_winner(proposal)
+        if winner == OUTCOME_NONE:
+            self.market_state[market_id] = STATE_PENDING
+            self.market_winner[market_id] = OUTCOME_NONE
+            self.market_reason[market_id] = REASON_NO_CONSENSUS
+            return STATE_PENDING
+        winning_pool = self.outcome_pool.get(self._outcome_key(market_id, winner), 0)
+        total_pool = self.market_pool.get(market_id, 0)
+        self.market_winner[market_id] = winner
+        if total_pool > 0 and winning_pool == 0:
+            self.market_state[market_id] = STATE_INCONCLUSIVE
+            self.market_winner[market_id] = OUTCOME_NONE
+            self.market_reason[market_id] = REASON_ZERO_BACKED
+            return STATE_INCONCLUSIVE
+        self.market_winning_pool[market_id] = winning_pool
+        self.market_state[market_id] = STATE_SETTLED
+        self.market_reason[market_id] = REASON_CONSENSUS
+        return STATE_SETTLED
