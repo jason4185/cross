@@ -39,11 +39,14 @@ export function TradePanel({ market }: { market: Market }) {
     parsed <= remaining &&
     (balanceWei === null || parsed <= balanceWei),
   );
+  const unresolved =
+    market.contractState === "OPEN" || market.contractState === "SETTLEMENT_PENDING";
   const canSettle =
     connected &&
-    market.contractState !== "SETTLED" &&
-    market.contractState !== "INCONCLUSIVE" &&
-    market.settlementAvailable;
+    unresolved &&
+    !market.deadlineExpired &&
+    (market.contractState === "SETTLEMENT_PENDING" || market.settlementAvailable);
+  const canFinalizeInconclusive = connected && unresolved && market.deadlineExpired;
   const claimable = Boolean(position?.claimable);
   const refundable = Boolean(position?.refundable);
   const claimableAmount = claimable ? (position?.claimableWei ?? 0n) : 0n;
@@ -230,18 +233,41 @@ export function TradePanel({ market }: { market: Market }) {
       {canSettle && (
         <TransactionAction
           call={safeCrossWrite(() => crossContract.settleMarket(market.id))}
-          label="Settle Market"
+          label={
+            market.contractState === "SETTLEMENT_PENDING" ? "Retry settlement" : "Settle Market"
+          }
         />
       )}
       {market.contractState === "OPEN" &&
         !market.settlementAvailable &&
+        !market.deadlineExpired &&
+        !market.bettingOpen &&
         market.state !== "LIVE" && (
           <ClosedMessage>
             Settlement becomes available after the 60-second finalization period.
           </ClosedMessage>
         )}
-      {market.contractState === "SETTLEMENT_PENDING" && !canSettle && (
-        <ClosedMessage>Settlement is pending a valid 2-of-2 source consensus.</ClosedMessage>
+      {market.contractState === "SETTLEMENT_PENDING" && !market.deadlineExpired && (
+        <SettlementMessage>
+          <p>Settlement is pending a valid 2-of-2 source consensus.</p>
+          <p className="mt-1">
+            Gate and Bitget did not reach 2-of-2 consensus. Settlement can be retried until the
+            deadline.
+          </p>
+        </SettlementMessage>
+      )}
+      {canFinalizeInconclusive && (
+        <SettlementMessage>
+          <p className="font-semibold text-warning">Settlement deadline expired.</p>
+          <p className="mt-1">
+            No valid 2-of-2 consensus was reached before the deadline. Finalize the market as
+            inconclusive to enable refunds.
+          </p>
+          <TransactionAction
+            call={safeCrossWrite(() => crossContract.settleMarket(market.id))}
+            label="Finalize inconclusive"
+          />
+        </SettlementMessage>
       )}
 
       {claimable && (
@@ -303,5 +329,13 @@ function ClosedMessage({ children }: { children: ReactNode }) {
     <p className="mt-5 rounded-md bg-secondary p-3 text-center text-xs text-muted-foreground">
       {children}
     </p>
+  );
+}
+
+function SettlementMessage({ children }: { children: ReactNode }) {
+  return (
+    <div className="mt-5 rounded-md border border-warning/25 bg-warning/8 p-3 text-center text-xs text-muted-foreground">
+      {children}
+    </div>
   );
 }

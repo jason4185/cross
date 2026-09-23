@@ -99,7 +99,7 @@ function MarketDetailView({ market, evidence }: { market: Market; evidence: Sour
   );
   const latest = liveData.points.at(-1);
   const total = market.totalPoolWei;
-  const isOpen = market.state === "OPEN";
+  const isBeforeStart = market.contractState === "OPEN" && market.bettingOpen;
   const timeline = [
     { label: "Betting closes", timestamp: market.start },
     { label: "Market ends", timestamp: market.end },
@@ -148,7 +148,7 @@ function MarketDetailView({ market, evidence }: { market: Market; evidence: Sour
             connection={liveData.connection}
             lastUpdated={liveData.lastUpdated}
             error={liveData.error}
-            isOpen={isOpen}
+            isBeforeStart={isBeforeStart}
             officialWinner={market.winner}
             onRetry={liveData.retry}
           />
@@ -365,7 +365,7 @@ function LivePerformancePanel({
   connection,
   lastUpdated,
   error,
-  isOpen,
+  isBeforeStart,
   officialWinner,
   onRetry,
 }: {
@@ -377,27 +377,32 @@ function LivePerformancePanel({
   connection: "REST" | "WEBSOCKET" | "POLLING" | "DISCONNECTED";
   lastUpdated: number | null;
   error: string | null;
-  isOpen: boolean;
+  isBeforeStart: boolean;
   officialWinner: "INDICES" | "FX" | undefined;
   onRetry: () => void;
 }) {
-  const isCompleted =
-    marketState === "SETTLEMENT_PENDING" ||
-    marketState === "SETTLED" ||
-    marketState === "INCONCLUSIVE";
+  const isOfficiallySettled = marketState === "SETTLED";
+  const isWindowComplete =
+    !isBeforeStart &&
+    (marketState === "OPEN" ||
+      marketState === "SETTLEMENT_PENDING" ||
+      marketState === "SETTLED" ||
+      marketState === "INCONCLUSIVE");
   const displayIndices = latest?.indices ?? 0;
   const displayFx = latest?.fx ?? 0;
   const hasChart = chartData.length > 0;
-  const statusText = isOpen
+  const statusText = isBeforeStart
     ? `Performance begins when the market starts at ${formatUtc(marketStart, false)}.`
     : status === "loading"
       ? "Loading exact-window Bitget candles…"
       : status === "unavailable"
         ? (error ?? "Live market data temporarily unavailable.")
-        : isCompleted
-          ? marketState === "SETTLEMENT_PENDING"
-            ? "Market window complete · awaiting settlement"
-            : "Completed exact-window performance"
+        : isWindowComplete
+          ? marketState === "SETTLED"
+            ? "Completed exact-window performance"
+            : marketState === "INCONCLUSIVE"
+              ? "Market window complete · official result inconclusive"
+              : "Market window complete · awaiting settlement"
           : "Live market data · Bitget";
   const connectionText = bitgetStatusLabel(status, connection);
 
@@ -407,7 +412,7 @@ function LivePerformancePanel({
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-sm font-semibold">Basket performance %</h2>
-            {!isOpen && (
+            {!isBeforeStart && (
               <span className="inline-flex items-center gap-1.5 rounded-sm border border-primary/20 bg-primary/8 px-2 py-1 text-[9px] font-bold tracking-wide text-primary">
                 <span
                   className={`size-1.5 rounded-full ${status === "live" ? "bg-success shadow-[0_0_8px_var(--success)]" : "bg-primary"}`}
@@ -427,12 +432,12 @@ function LivePerformancePanel({
 
       <div className="mt-5 grid grid-cols-3 gap-2 border-y border-border py-3 sm:gap-4">
         <LiveMetric
-          label={isCompleted ? "Final INDICES" : "INDICES"}
+          label={isOfficiallySettled ? "Final INDICES" : "BITGET INDICES"}
           value={latest ? percent(displayIndices) : "—"}
           tone="indices"
         />
         <LiveMetric
-          label={isCompleted ? "Final FX" : "FX"}
+          label={isOfficiallySettled ? "Final FX" : "BITGET FX"}
           value={latest ? percent(displayFx) : "—"}
           tone="fx"
         />
@@ -446,7 +451,7 @@ function LivePerformancePanel({
         />
       </div>
 
-      {isOpen ? (
+      {isBeforeStart ? (
         <ChartEmpty title="Market not started" copy={statusText} />
       ) : hasChart ? (
         <div className="mt-5 h-72 w-full min-w-0">
@@ -531,7 +536,7 @@ function LivePerformancePanel({
           Live chart uses Bitget market data for visualization. Official settlement requires
           independent Gate + Bitget consensus.
         </span>
-        {!isOpen && (
+        {!isBeforeStart && (
           <span className="shrink-0 font-mono">
             Last update: {lastUpdated ? formatUtc(lastUpdated, false) : "—"}
           </span>
