@@ -105,6 +105,16 @@ async function ensureNetwork(wallet: EthereumProvider) {
   } catch (error) {
     if (errorCode(error) !== 4902) throw error;
     await addNetwork(wallet);
+    await wallet.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: CROSS_NETWORK.chainIdHex }],
+    });
+  }
+  const chainId = await currentChainId(wallet);
+  if (chainId !== CROSS_NETWORK.chainId) {
+    throw new Error(
+      `Wallet network setup failed: wallet is on chain ${chainId ?? "an unsupported network"}; switch to GenLayer Studio Next (chain ${CROSS_NETWORK.chainId}).`,
+    );
   }
 }
 
@@ -187,12 +197,17 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     if (!wallet) throw new Error("A compatible wallet extension was not found.");
     setState((current) => ({ ...current, isLoading: true, isInstalled: true }));
     try {
-      await ensureNetwork(wallet);
       const value = await wallet.request({ method: "eth_requestAccounts" });
       const accounts = Array.isArray(value)
         ? value.filter((item): item is string => typeof item === "string")
         : [];
       if (!accounts[0]) throw new Error("No wallet account was selected.");
+      try {
+        await ensureNetwork(wallet);
+      } catch (error) {
+        if (errorCode(error) === 4001) throw error;
+        throw new Error(`Wallet network setup failed: ${errorMessage(error)}`);
+      }
       await refreshWallet();
       return accounts[0];
     } catch (error) {

@@ -79,6 +79,16 @@ export function formatCrossError(error: unknown): string {
   )
     return "Transaction cancelled. No changes were made.";
   if (
+    message.includes("wallet network setup failed") ||
+    message.includes("wallet is on chain") ||
+    message.includes("unrecognized chain") ||
+    message.includes("chain not added") ||
+    message.includes("unsupported chain") ||
+    message.includes("wallet_switchethereumchain") ||
+    message.includes("wallet_addethereumchain")
+  )
+    return "Switch your wallet to GenLayer Studio Next (chain 61997) to continue.";
+  if (
     message.includes("network") ||
     message.includes("rpc") ||
     message.includes("fetch failed") ||
