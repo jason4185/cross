@@ -34,11 +34,11 @@ function CreatePage() {
   const deadline = ready + 18_000_000;
   const existing = useCrossMarketByStart(startSeconds);
   const configReadError = !config && (configQuery.error ?? configError);
-  const availabilityReadError =
-    existing.error && existing.data === undefined ? existing.error : null;
-  const availabilityKnown = existing.isSuccess && !availabilityReadError;
+  const availabilityReadError = existing.error ?? null;
+  const availabilityKnown =
+    existing.isSuccess && existing.data !== undefined && !availabilityReadError;
   const protocolReady = Boolean(config && !configReadError && config.durationSeconds === 3600);
-  const canCreate = connected && protocolReady && availabilityKnown && existing.data === undefined;
+  const canCreate = connected && protocolReady && availabilityKnown && existing.data === null;
   const readError = configReadError ?? availabilityReadError;
   const retryReads = async () => {
     if (configReadError) await configQuery.refetch();

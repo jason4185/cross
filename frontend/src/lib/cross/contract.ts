@@ -1,7 +1,7 @@
 import { createClient } from "genlayer-js";
 import type { CalldataEncodable } from "genlayer-js/types";
 import { CROSS_CHAIN, getCrossContractAddress } from "./config";
-import { contractErrorText } from "./errors";
+import { contractErrorText, isMarketNotFoundError } from "./errors";
 import type {
   BettingState,
   ContractMarketState,
@@ -294,8 +294,7 @@ function writeCall(method: string, args: CalldataEncodable[]): CrossWriteCall {
 }
 
 function isContractMissingRead(error: unknown) {
-  const message = contractErrorText(error);
-  return message.includes("market not found") || message.includes("missing or invalid parameters");
+  return isMarketNotFoundError(error);
 }
 
 export const crossContract = {
@@ -402,11 +401,11 @@ export const crossContract = {
       throw new Error("The CROSS contract returned invalid claimable positions.");
     return value.map(mapPosition);
   },
-  async getMarketByStart(marketStartSeconds: number) {
+  async getMarketByStart(marketStartSeconds: number): Promise<Market | null> {
     try {
       return mapMarket(await read("get_market_by_start", [marketStartSeconds]));
     } catch (error) {
-      if (isContractMissingRead(error)) return undefined;
+      if (isContractMissingRead(error)) return null;
       throw error;
     }
   },

@@ -226,7 +226,7 @@ export function useCrossEvidence(marketId: number, source: "GATE" | "BITGET", en
 }
 
 export function useCrossMarketByStart(marketStartSeconds: number) {
-  return useQuery<Market | undefined>({
+  return useQuery<Market | null>({
     queryKey: crossKeys.marketByStart(marketStartSeconds),
     queryFn: () => crossContract.getMarketByStart(marketStartSeconds),
     enabled: Number.isSafeInteger(marketStartSeconds) && marketStartSeconds > 0,

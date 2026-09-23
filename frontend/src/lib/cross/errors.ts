@@ -23,8 +23,43 @@ function textFromError(error: unknown, seen = new Set<object>(), depth = 0): str
   return String(error);
 }
 
+function decodedReceiptResult(error: unknown, seen = new Set<object>(), depth = 0): string {
+  if (depth > 6 || error === null || error === undefined) return "";
+  if (typeof error !== "object") return "";
+  if (seen.has(error)) return "";
+  seen.add(error);
+
+  const record = error as Record<string, unknown>;
+  const receipt = record["receipt"];
+  if (typeof receipt === "object" && receipt !== null) {
+    const result = (receipt as Record<string, unknown>)["result"];
+    if (typeof result === "string") {
+      try {
+        const binary = globalThis.atob(result);
+        const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+        return new TextDecoder().decode(bytes);
+      } catch {
+        return "";
+      }
+    }
+  }
+
+  for (const nested of [record["cause"], record["data"]]) {
+    const decoded = decodedReceiptResult(nested, seen, depth + 1);
+    if (decoded) return decoded;
+  }
+  return "";
+}
+
 export function contractErrorText(error: unknown) {
   return textFromError(error).toLowerCase();
+}
+
+export function isMarketNotFoundError(error: unknown) {
+  return (
+    contractErrorText(error).includes("market not found") ||
+    decodedReceiptResult(error).toLowerCase().includes("market not found")
+  );
 }
 
 export function isRateLimitError(error: unknown) {
