@@ -1,11 +1,24 @@
-function textFromError(error: unknown): string {
-  if (error instanceof Error) return error.message;
+function textFromError(error: unknown, seen = new Set<object>(), depth = 0): string {
+  if (depth > 4) return "";
+  if (error instanceof Error) {
+    const cause = error.cause ? textFromError(error.cause, seen, depth + 1) : "";
+    return [error.message, cause].filter(Boolean).join(" ");
+  }
   if (typeof error === "string") return error;
   if (typeof error === "object" && error !== null) {
+    if (seen.has(error)) return "";
+    seen.add(error);
     const record = error as Record<string, unknown>;
-    return [record["message"], record["details"], record["reason"], record["shortMessage"]]
-      .filter((value): value is string => typeof value === "string")
-      .join(" ");
+    const fields = [
+      record["message"],
+      record["details"],
+      record["reason"],
+      record["shortMessage"],
+    ].filter((value): value is string => typeof value === "string");
+    const nested = [record["cause"], record["data"]]
+      .map((value) => textFromError(value, seen, depth + 1))
+      .filter(Boolean);
+    return [...fields, ...nested].join(" ");
   }
   return String(error);
 }

@@ -11,6 +11,7 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useCross } from "@/components/cross/app-context";
 import { PageShell } from "@/components/cross/page-shell";
+import { CrossReadError } from "@/components/cross/read-error";
 import { EmptyState, OutcomeChip, Panel, StatusBadge } from "@/components/cross/primitives";
 import { TransactionAction } from "@/components/cross/transaction-action";
 import { crossContract, safeCrossWrite } from "@/lib/cross/contract";
@@ -39,14 +40,26 @@ function PortfolioPage() {
     () => new Map((claimable.data ?? []).map((item) => [item.market.id, item])),
     [claimable.data],
   );
+  const claimableFromPositions = useMemo(
+    () =>
+      new Map(
+        (positions.data ?? [])
+          .filter((item) => item.position.claimable || item.position.refundable)
+          .map((item) => [item.market.id, item]),
+      ),
+    [positions.data],
+  );
+  const claimableForMarket = (marketId: number) =>
+    claimableByMarket.get(marketId) ?? claimableFromPositions.get(marketId);
   const totalStaked = (positions.data ?? []).reduce(
     (sum, item) => sum + item.position.stakeWei,
     0n,
   );
-  const totalClaimable = (claimable.data ?? []).reduce(
-    (sum, item) => sum + item.position.claimableWei,
-    0n,
-  );
+  const totalClaimable = (
+    claimable.data ??
+    positions.data?.filter((item) => item.position.claimable || item.position.refundable) ??
+    []
+  ).reduce((sum, item) => sum + item.position.claimableWei, 0n);
   const active = (positions.data ?? []).filter(
     (item) => item.market.contractState === "OPEN",
   ).length;
@@ -55,9 +68,12 @@ function PortfolioPage() {
   ).length;
   const visible = (positions.data ?? []).filter((item) => {
     if (tab === "active") return item.market.contractState === "OPEN";
-    if (tab === "claimable") return claimableByMarket.has(item.market.id);
-    return item.market.contractState !== "OPEN" && !claimableByMarket.has(item.market.id);
+    if (tab === "claimable") return Boolean(claimableForMarket(item.market.id));
+    return item.market.contractState !== "OPEN" && !claimableForMarket(item.market.id);
   });
+  const positionsReadError = positions.error && !positions.data ? positions.error : null;
+  const claimableReadError = claimable.error && !claimable.data ? claimable.error : null;
+  const readError = positionsReadError ?? (tab === "claimable" ? claimableReadError : null);
   const stats = [
     { label: "Total staked", value: formatGen(totalStaked), icon: CircleDollarSign },
     { label: "Claimable", value: formatGen(totalClaimable), icon: CheckCircle2 },
@@ -125,12 +141,19 @@ function PortfolioPage() {
               Loading wallet positions…
             </Panel>
           )}
-          {(positions.error || claimable.error) && (
-            <Panel className="mt-4 p-6 text-center text-sm text-destructive">
-              Wallet positions could not be loaded from Studio Next.
-            </Panel>
+          {readError && (
+            <CrossReadError
+              error={readError}
+              onRetry={() =>
+                void Promise.all([
+                  positionsReadError ? positions.refetch() : Promise.resolve(),
+                  claimableReadError ? claimable.refetch() : Promise.resolve(),
+                ])
+              }
+              isRetrying={positions.isFetching || claimable.isFetching}
+            />
           )}
-          {!positions.isLoading && !positions.error && !visible.length && (
+          {!positions.isLoading && !readError && !visible.length && (
             <div className="mt-4">
               <EmptyState
                 title={
@@ -149,7 +172,7 @@ function PortfolioPage() {
               <PositionCard
                 key={item.market.id}
                 item={item}
-                claimable={claimableByMarket.get(item.market.id)}
+                claimable={claimableForMarket(item.market.id)}
               />
             ))}
           </div>

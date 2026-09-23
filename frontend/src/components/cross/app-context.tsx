@@ -36,7 +36,7 @@ function CrossRuntime({ children }: { children: ReactNode }) {
         balanceWei: wallet.balanceWei,
         config: config.data,
         configLoading: config.isLoading,
-        configError: config.error instanceof Error ? config.error : null,
+        configError: config.error instanceof Error && !config.data ? config.error : null,
         connectWallet: wallet.connectWallet,
         disconnectWallet: wallet.disconnectWallet,
         switchWalletAccount: wallet.switchWalletAccount,

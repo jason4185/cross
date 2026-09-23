@@ -33,6 +33,17 @@ function CreatePage() {
   const ready = end + 60_000;
   const deadline = ready + 18_000_000;
   const existing = useCrossMarketByStart(startSeconds);
+  const configReadError = !config && (configQuery.error ?? configError);
+  const availabilityReadError =
+    existing.error && existing.data === undefined ? existing.error : null;
+  const availabilityKnown = existing.isSuccess && !availabilityReadError;
+  const protocolReady = Boolean(config && !configReadError && config.durationSeconds === 3600);
+  const canCreate = connected && protocolReady && availabilityKnown && existing.data === undefined;
+  const readError = configReadError ?? availabilityReadError;
+  const retryReads = async () => {
+    if (configReadError) await configQuery.refetch();
+    if (availabilityReadError) await existing.refetch();
+  };
   const connect = async () => {
     try {
       await connectWallet();
@@ -64,18 +75,11 @@ function CreatePage() {
         Anyone can create the single canonical market for the next exact UTC hour. Timing and
         matchup are fixed by protocol.
       </p>
-      {configError && (
+      {readError && (
         <CrossReadError
-          error={configError}
-          onRetry={() => void configQuery.refetch()}
-          isRetrying={configQuery.isFetching}
-        />
-      )}
-      {existing.error && (
-        <CrossReadError
-          error={existing.error}
-          onRetry={() => void existing.refetch()}
-          isRetrying={existing.isFetching}
+          error={readError}
+          onRetry={() => void retryReads()}
+          isRetrying={configQuery.isFetching || existing.isFetching}
         />
       )}
       <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -101,11 +105,15 @@ function CreatePage() {
           </div>
           <div className="mt-6 flex items-center gap-2 rounded-md border border-border bg-secondary p-3 text-xs text-muted-foreground">
             <LockKeyhole className="size-4 text-primary" />
-            {existing.data
-              ? `Market #${existing.data.id} already exists for this start.`
-              : existing.isLoading
-                ? "Checking the CROSS contract…"
-                : "This exact-hour market is available on the contract."}
+            {configReadError
+              ? "Protocol configuration could not be verified on Studio Next."
+              : availabilityReadError
+                ? "Market availability could not be verified on Studio Next."
+                : existing.data
+                  ? `Market #${existing.data.id} already exists for this start.`
+                  : configQuery.isLoading || existing.isLoading
+                    ? "Checking the CROSS contract…"
+                    : "This exact-hour market is available on the contract."}
           </div>
           {existing.data ? (
             <Button asChild className="mt-5 h-11 w-full">
@@ -117,7 +125,7 @@ function CreatePage() {
             <TransactionAction
               call={safeCrossWrite(() => crossContract.createMarket(startSeconds))}
               label="Create Market"
-              disabled={Boolean(config && config.durationSeconds !== 3600)}
+              disabled={!canCreate}
               onSuccess={() => void created()}
             />
           ) : (

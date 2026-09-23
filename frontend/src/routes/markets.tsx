@@ -113,6 +113,9 @@ function MarketsIndexPage() {
     { label: "Your Positions", value: yourPositions, icon: WalletCards },
     { label: "Ready to Settle", value: readyCount, icon: Clock3 },
   ];
+  const configReadError = !configQuery.data ? (configQuery.error ?? configError) : null;
+  const marketsReadError = markets.error && !markets.data ? markets.error : null;
+  const readError = marketsReadError ?? (!markets.data ? configReadError : null);
 
   return (
     <PageShell>
@@ -153,17 +156,16 @@ function MarketsIndexPage() {
         ))}
       </section>
 
-      {configError ? (
+      {readError ? (
         <CrossReadError
-          error={configError}
-          onRetry={() => void configQuery.refetch()}
-          isRetrying={configQuery.isFetching}
-        />
-      ) : markets.error ? (
-        <CrossReadError
-          error={markets.error}
-          onRetry={() => void markets.refetch()}
-          isRetrying={markets.isFetching}
+          error={readError}
+          onRetry={() =>
+            void Promise.all([
+              marketsReadError ? markets.refetch() : Promise.resolve(),
+              configReadError ? configQuery.refetch() : Promise.resolve(),
+            ])
+          }
+          isRetrying={markets.isFetching || configQuery.isFetching}
         />
       ) : null}
 

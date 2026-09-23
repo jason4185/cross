@@ -9,13 +9,12 @@ import { useCross } from "./app-context";
 import { formatCrossError } from "@/lib/cross/errors";
 import { crossContract, safeCrossWrite } from "@/lib/cross/contract";
 import { GEN_WEI, formatGen, parseGen } from "@/lib/cross/format";
-import { useCrossBettingState, useCrossMyPosition } from "@/lib/cross/queries";
+import { useCrossMyPosition } from "@/lib/cross/queries";
 import type { Market, Outcome, Position } from "@/lib/cross/types";
 
 export function TradePanel({ market }: { market: Market }) {
   const { connected, connectWallet, balanceWei, config } = useCross();
   const positionQuery = useCrossMyPosition(market.id);
-  const bettingQuery = useCrossBettingState(market.id);
   const position = positionQuery.data;
   const [side, setSide] = useState<Outcome>(position?.side ?? "INDICES");
   const [amount, setAmount] = useState("");
@@ -97,9 +96,9 @@ export function TradePanel({ market }: { market: Market }) {
     );
   }
 
-  const walletDataError = positionQuery.error ?? bettingQuery.error;
+  const walletDataError = positionQuery.data ? null : positionQuery.error;
   if (walletDataError) {
-    const retrying = positionQuery.isFetching || bettingQuery.isFetching;
+    const retrying = positionQuery.isFetching;
     return (
       <Panel className="sticky top-20 p-4 sm:p-5">
         <div className="rounded-md border border-destructive/25 bg-destructive/8 p-4">
@@ -111,7 +110,7 @@ export function TradePanel({ market }: { market: Market }) {
             className="mt-4"
             size="sm"
             variant="outline"
-            onClick={() => void Promise.all([positionQuery.refetch(), bettingQuery.refetch()])}
+            onClick={() => void positionQuery.refetch()}
             disabled={retrying}
           >
             <RefreshCw className={retrying ? "animate-spin" : ""} />
@@ -302,7 +301,7 @@ export function TradePanel({ market }: { market: Market }) {
             : "No refundable stake was found for this wallet."}
         </ClosedMessage>
       )}
-      {positionQuery.isLoading || bettingQuery.isLoading ? (
+      {positionQuery.isLoading ? (
         <p className="mt-4 text-center text-[10px] text-muted-foreground">
           Refreshing wallet position…
         </p>

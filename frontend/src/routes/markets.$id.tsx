@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { displayMarketState, formatGen, formatUtc, percent } from "@/lib/cross/format";
-import { contractErrorText } from "@/lib/cross/errors";
+import { contractErrorText, formatCrossError } from "@/lib/cross/errors";
 import { LIVE_ASSETS, type LiveAssetKey } from "@/lib/cross/live-market-data";
 import { useLiveMarketData } from "@/lib/cross/use-live-market-data";
 import { useCrossEvidence, useCrossMarket, useCrossMyPosition } from "@/lib/cross/queries";
@@ -58,7 +58,7 @@ function MarketDetail() {
   const gateEvidence = useCrossEvidence(marketId, "GATE", evidenceEnabled);
   const bitgetEvidence = useCrossEvidence(marketId, "BITGET", evidenceEnabled);
   if (marketQuery.isLoading) return <DetailLoading />;
-  if (marketQuery.error || !marketQuery.data) {
+  if (!marketQuery.data) {
     if (contractErrorText(marketQuery.error).includes("market not found") || !marketQuery.error) {
       return <MarketNotFound />;
     }
@@ -80,14 +80,44 @@ function MarketDetail() {
   return (
     <MarketDetailView
       market={market}
-      evidence={[gateEvidence.data, bitgetEvidence.data].filter((item): item is SourceEvidence =>
-        Boolean(item),
-      )}
+      evidence={[
+        {
+          source: "GATE",
+          data: gateEvidence.data,
+          error: gateEvidence.error,
+          isLoading: gateEvidence.isLoading,
+          isFetching: gateEvidence.isFetching,
+          refetch: gateEvidence.refetch,
+        },
+        {
+          source: "BITGET",
+          data: bitgetEvidence.data,
+          error: bitgetEvidence.error,
+          isLoading: bitgetEvidence.isLoading,
+          isFetching: bitgetEvidence.isFetching,
+          refetch: bitgetEvidence.refetch,
+        },
+      ]}
     />
   );
 }
 
-function MarketDetailView({ market, evidence }: { market: Market; evidence: SourceEvidence[] }) {
+interface EvidenceQueryState {
+  source: "GATE" | "BITGET";
+  data: SourceEvidence | undefined;
+  error: unknown;
+  isLoading: boolean;
+  isFetching: boolean;
+  refetch: () => Promise<unknown>;
+}
+
+function MarketDetailView({
+  market,
+  evidence,
+}: {
+  market: Market;
+  evidence: EvidenceQueryState[];
+}) {
   const liveData = useLiveMarketData(market.start, market.end, market.state);
   const chartData = useMemo(
     () =>
@@ -207,7 +237,8 @@ function MarketDetailView({ market, evidence }: { market: Market; evidence: Sour
             </p>
             <Accordion type="multiple" className="mt-3">
               {["GATE", "BITGET"].map((source) => {
-                const item = evidence.find((entry) => entry.source === source);
+                const query = evidence.find((entry) => entry.source === source);
+                const item = query?.data;
                 return (
                   <AccordionItem key={source} value={source}>
                     <AccordionTrigger>
@@ -216,7 +247,8 @@ function MarketDetailView({ market, evidence }: { market: Market; evidence: Sour
                         <span
                           className={item?.status === "VALID" ? "text-success" : "text-warning"}
                         >
-                          {item?.status ?? "PENDING"}
+                          {item?.status ??
+                            (query?.error ? "ERROR" : query?.isLoading ? "LOADING" : "PENDING")}
                         </span>
                         {item?.winner && <OutcomeChip side={item.winner} />}
                       </span>
@@ -224,6 +256,21 @@ function MarketDetailView({ market, evidence }: { market: Market; evidence: Sour
                     <AccordionContent className="text-muted-foreground">
                       {item ? (
                         <EvidenceDetails evidence={item} />
+                      ) : query?.error ? (
+                        <div className="space-y-3">
+                          <p>{formatCrossError(query.error)}</p>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void query.refetch()}
+                            disabled={query.isFetching}
+                          >
+                            <RefreshCw className={query.isFetching ? "animate-spin" : ""} />
+                            {query.isFetching ? "Retrying…" : "Retry"}
+                          </Button>
+                        </div>
+                      ) : query?.isLoading ? (
+                        "Loading settlement evidence…"
                       ) : (
                         "Settlement evidence is not available yet."
                       )}
