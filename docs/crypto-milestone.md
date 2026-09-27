@@ -148,17 +148,15 @@ Currently verified:
 - `CrossCrypto.py` is deployed on Studio Next.
 - Both deployed contracts are readable from production.
 - The production frontend is integrated with both contract addresses.
-- A real crypto market was created through the frontend.
-- A real crypto GEN bet was placed through the frontend.
+- Live end-to-end verification has now covered crypto market creation, GEN bet
+  placement, contract settlement, post-settlement result display, and claim
+  through the production CROSS frontend.
 
-Not yet manually verified against a closed live crypto market:
+Refund behavior is implemented and covered by contract/frontend logic, but has
+not yet been manually exercised in the live production flow.
 
-- crypto settlement after the newly created market closes;
-- post-settlement source-evidence verification; and
-- a real crypto claim or refund, depending on the final market outcome.
-
-Automated/direct contract checks do not replace these pending live lifecycle
-checks.
+Automated/direct contract checks remain separate from the live lifecycle
+verification described above.
 
 ## Why This Is a Milestone
 
