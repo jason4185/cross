@@ -1,107 +1,202 @@
 # CROSS
 
-CROSS is a GenLayer prediction market where users stake native GEN on whether
-an equal-weighted INDICES or FX basket performs better during an exact one-hour
-UTC market window.
+CROSS is a GenLayer prediction market for comparing market performance across
+traditional and crypto assets. It is one product with multiple market formats,
+settled by the deployed contracts and funded with native GEN.
 
-## How It Works
+Live app: <https://cross-orcin.vercel.app/>
 
-Each market compares two fixed baskets:
+## What CROSS Does
+
+CROSS currently supports three market formats:
+
+1. **INDICES vs FX** — the original accepted CROSS market.
+2. **Crypto UP/DOWN** — whether one crypto asset finishes above or below its
+   opening price.
+3. **Crypto DOMINANCE** — which asset in a fixed category has the highest
+   percentage return.
+
+Markets start at the next exact UTC hour. Betting is pooled and pari-mutuel;
+the contract is the source of truth for market state, pools, settlement
+evidence, claims, and refunds.
+
+## Markets
+
+### Original CROSS: INDICES vs FX
+
+The accepted `Cross.py` contract compares two fixed baskets over one hour:
 
 - **INDICES:** SPY, QQQ, IWM
 - **FX:** EURUSD, GBPUSD, USDJPY
 
-Markets can be created only for the next exact UTC hour. Users choose one
-outcome and may add to that same side before the market starts. A wallet cannot
-switch sides within a market.
+Gate and Bitget independently provide the exact market-window candles. A
+strict 2-of-2 agreement is required before a directional winner can settle.
 
-The minimum stake is 1 GEN. A wallet's cumulative stake is capped at 70 GEN per
-market.
+### Milestone Expansion
 
-Each market runs from `market_start` through `market_start + 3600` seconds.
+The accepted CROSS product originally provided one 1-hour INDICES-vs-FX market.
+This milestone extends that same product with crypto market primitives and a
+second deployed contract module.
 
-## Market Lifecycle
+#### Crypto UP/DOWN
+
+Supported assets are BTC, ETH, SOL, BNB, XRP, and DOGE. Users choose **UP** or
+**DOWN** for a 1-hour or 2-hour market window:
+
+- `close > open` → UP
+- `close < open` → DOWN
+- `close == open` → source TIE
+
+TIE is a settlement-source result, not a user betting choice.
+
+#### Crypto DOMINANCE
+
+Users choose the asset with the highest exact percentage return in one of two
+fixed categories:
+
+- **MAJORS:** BTC, ETH, SOL
+- **LARGE_CAP_ALTS:** BNB, XRP, DOGE
+
+Each source evaluates all three assets independently. The return is
+`(close - open) / open`, compared with exact rational arithmetic. This handles
+positive, mixed, and all-negative returns; when every return is negative, the
+least-negative return is highest. An exact tie for the highest return is a
+source TIE.
+
+Crypto markets support exactly `3600`-second (1H) and `7200`-second (2H)
+durations.
+
+### What Changed
+
+| Accepted CROSS | Milestone CROSS |
+| --- | --- |
+| One market format | Three market formats |
+| INDICES vs FX | INDICES vs FX plus crypto UP/DOWN and DOMINANCE |
+| One-hour window | 1H and 2H crypto windows |
+| Six traditional/FX instruments | Six crypto assets and two fixed crypto categories |
+| Gate + Bitget settlement | Binance + Gate + Bitget crypto settlement |
+| One contract/frontend path | Two contracts presented through one CROSS frontend |
+
+The expansion adds new market structures, source-consensus logic, exact 2H
+window construction, source-aware routing, unified creation, and a portfolio
+that can represent positions from both contracts without market-ID collisions.
+
+## How Settlement Works
+
+### Crypto source evidence
+
+`CrossCrypto.py` uses Binance, Gate, and Bitget market/trading USDT-futures
+candles. Each source fetches and validates its own complete evidence; prices
+are never mixed between sources.
+
+For a 1H market, settlement uses the exact 1H candle starting at the market
+start. For a 2H market, the contract does not use a native 2H candle. It
+retrieves exactly two consecutive 1H candles, at `T` and `T + 1 hour`, and
+uses:
 
 ```text
-Create → Bet → One-hour market window → Settlement → Claim or refund
+official open  = first candle open
+official close = second candle close
 ```
 
-The contract records markets as `OPEN`, `SETTLEMENT_PENDING`, `SETTLED`, or
-`INCONCLUSIVE`. Betting closes when the market starts. After the market ends,
-settlement waits through a 60-second candle-finalization grace period. A valid
-settlement can be retried until the deadline; unresolved markets become
-inconclusive.
+The optimized path retrieves both required 1H candles in one bounded request
+per asset and source while still validating both exact timestamps.
 
-## Settlement
+Crypto settlement requires two of the three source results to agree on the
+same user-resolvable outcome. If consensus is unavailable, the market remains
+`SETTLEMENT_PENDING` while retries are available. At the deadline it becomes
+`INCONCLUSIVE`. A zero-backed consensus winner also becomes inconclusive.
 
-Gate and Bitget independently fetch the six exact one-hour candles for the
-market window and calculate a complete verdict. Prices and returns are never
-mixed between sources. Settlement requires strict 2-of-2 agreement: both
-sources must produce the same valid winner.
+The crypto lifecycle is:
 
-The basket scores use equal weighting. Normal returns are calculated as
-`(close - open) / open`. USDJPY uses `(open / close) - 1`, so positive
-performance represents JPY strengthening against USD. Scores are compared with
-exact rational arithmetic.
+```text
+OPEN → SETTLEMENT_PENDING → SETTLED
+                         ↘ INCONCLUSIVE
+```
 
-Gate uses `SPY_USDT`, `QQQ_USDT`, and `IWM_USDT` futures candles for INDICES,
-plus its TradFi K-line family for `EURUSD`, `GBPUSD`, and `USDJPY`. Bitget uses
-`SPYUSDT`, `QQQUSDT`, `IWMUSDT`, `EURUSDUSDT`, `GBPUSDUSDT`, and `USDJPYUSDT`.
+Settlement becomes ready after the market end plus a 60-second candle-finality
+grace period. The retry window is 18,000 seconds after `settlement_ready`.
+Inconclusive positions can receive their original stakes back.
 
-If source consensus is unavailable, the market remains pending while retries
-are available. The settlement deadline is `settlement_ready + 18000` seconds:
-five full hours after the 60-second grace period. A zero-backed winner in a
-non-empty pool becomes inconclusive and original stakes are refundable.
+### Betting and payouts
 
-Winning users share the total pool in proportion to their winning stake. Payouts
-use floor rounding, with the final winning claimant receiving the remaining
-pool balance. Inconclusive positions can claim their original stake once.
+For crypto markets:
 
-## Contract
+- Minimum initial position: **1 GEN**
+- Maximum cumulative position per wallet per market: **70 GEN**
+- Same-side top-ups: allowed
+- Switching sides: blocked
+- Protocol fee: `0`
+- Payouts: pari-mutuel with floor rounding
 
-Current Studio Next deployment:
+The final winning claimant receives the remaining pool balance so rounding
+remainder is not trapped. Claims and refunds are sender-only contract writes.
 
-`0xA6113D528B144ecA856a704E3331aDD31D12000E`
+## Architecture
 
-This is the current deployment, not a permanent protocol address.
+The accepted `Cross.py` contract remains unchanged. The crypto expansion lives
+in `CrossCrypto.py` because it introduces different market structures and
+settlement requirements while the accepted contract is already near the
+GenLayer contract-size ceiling.
+
+```text
+CROSS frontend
+├── Cross.py
+│   └── INDICES vs FX
+└── CrossCrypto.py
+    ├── Crypto UP/DOWN
+    └── Crypto DOMINANCE
+```
+
+Both contracts are presented as one CROSS product. Their independent market
+counters are kept distinct in the frontend through source-aware identities and
+routes such as `/markets/cross/1` and `/markets/crypto/1`.
+
+## Frontend
+
+The same frontend provides:
+
+- `/markets` — unified markets page
+- `/create` — unified creation flow for all three formats
+- `/portfolio` — positions aggregated from both contracts
+- `/how-it-works` — protocol and settlement explanation
+
+The Create page uses `Cross.py` for INDICES vs FX and `CrossCrypto.py` for
+crypto UP/DOWN or DOMINANCE. All formats use the next exact UTC-hour start
+required by their contract.
+
+## Deployed Contracts
+
+| Component | Address |
+| --- | --- |
+| CROSS — INDICES vs FX | `0xA6113D528B144ecA856a704E3331aDD31D12000E` |
+| CROSS — Crypto Markets | `0x1bDc533e16A78c853bF1Bd9C8B2eCbCcFD593b75` |
 
 - Network: GenLayer Studio Next
 - Chain ID: `61997`
-- RPC: `https://studio-next.genlayer.com/api`
+- RPC: <https://studio-next.genlayer.com/api>
+- Explorer: <https://explorer-studio-dev.genlayer.com/>
 
-### Writes
+## Milestone Progress
 
-```text
-create_market(market_start)
-place_bet(market_id, outcome) payable
-settle_market(market_id)
-claim(market_id)
-claim_refund(market_id)
-```
+Verified:
 
-`place_bet` receives the stake as native GEN value. The contract derives the
-payout recipient from the transaction sender.
+- `CrossCrypto.py` is deployed on Studio Next.
+- Both deployed contracts are readable from the production frontend.
+- The production frontend is wired to both contracts.
+- A real crypto market was created through the frontend.
+- A real crypto GEN bet was placed through the frontend.
 
-### Reads
+Not yet manually verified end-to-end:
 
-```text
-get_config()
-outcomes()
-get_market(market_id)
-get_markets(cursor, limit)
-get_open_markets(cursor, limit)
-get_market_count()
-get_my_position(market_id)
-get_my_market_count()
-get_my_positions(offset, limit)
-get_user_positions(user, cursor, limit)
-get_my_claimable_markets(offset, limit)
-get_market_by_start(market_start)
-get_source_evidence(market_id, source)
-get_betting_state(market_id)
-```
+- Live crypto settlement after the created market closes.
+- Post-settlement source-evidence verification.
+- A real crypto claim or refund following that settlement.
 
-## Running Locally
+Automated and direct contract checks are separate from this pending live
+lifecycle verification.
+
+## Run Locally
 
 ```bash
 cd frontend
@@ -110,29 +205,41 @@ cp .env.example .env
 bun run dev
 ```
 
-Set the local environment variable to the Studio Next deployment you want to
-use:
+Set both deployed addresses when using the milestone deployment:
 
 ```text
 VITE_CROSS_CONTRACT_ADDRESS=0xA6113D528B144ecA856a704E3331aDD31D12000E
+VITE_CROSS_CRYPTO_CONTRACT_ADDRESS=0x1bDc533e16A78c853bF1Bd9C8B2eCbCcFD593b75
 ```
 
-Do not commit `.env` files.
+The frontend targets Studio Next, chain `61997`, at
+`https://studio-next.genlayer.com/api`. Do not commit `.env` files.
 
-## Frontend
+## Verify
 
-The frontend uses TanStack Start, React, Tailwind CSS, and GenLayer Transaction
-Kit. Its Bitget live chart is informational; official market state, winner,
-pools, evidence, claims, and refunds come from the CROSS contract and its Gate
-+ Bitget settlement consensus.
+From `frontend/`:
+
+```bash
+bunx tsc --noEmit
+bun run test:integration
+bun run lint
+bun run build
+```
+
+The live application and deployed contracts remain the authoritative source
+for current runtime state.
 
 ## Repository Structure
 
 ```text
 contracts/
   Cross.py
-
+  CrossCrypto.py
+docs/
+  crypto-milestone.md
 frontend/
-
-tests/
 ```
+
+See [the crypto milestone review document](docs/crypto-milestone.md) for the
+accepted baseline, milestone delta, deployment details, and verification
+status.

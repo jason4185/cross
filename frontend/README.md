@@ -1,28 +1,37 @@
 # CROSS frontend
 
-CROSS is a Studio Next frontend for one-hour pooled prediction markets comparing the fixed INDICES basket (SPY, QQQ, IWM) with the fixed FX basket (EURUSD, GBPUSD, USDJPY).
+This is the single Studio Next frontend for the CROSS product. It reads and
+writes both deployed CROSS contracts:
 
-The application reads protocol state from the deployed CROSS contract through the typed adapter in `src/lib/cross/contract.ts`. It uses React Query for refresh/invalidation and the Studio Next Transaction Kit for wallet-confirmed writes.
+- `Cross.py` for the original INDICES vs FX market.
+- `CrossCrypto.py` for crypto UP/DOWN and DOMINANCE markets.
+
+The frontend keeps contract state authoritative and uses source-aware market
+identities so equal market IDs from the two contracts cannot collide.
 
 ## Network configuration
 
-Set the deployed address in `.env`:
+Set both deployed addresses in `.env`:
 
 ```text
 VITE_CROSS_CONTRACT_ADDRESS=0xA6113D528B144ecA856a704E3331aDD31D12000E
+VITE_CROSS_CRYPTO_CONTRACT_ADDRESS=0x1bDc533e16A78c853bF1Bd9C8B2eCbCcFD593b75
 ```
 
-The frontend targets Studio Next, chain `61997`, at `https://studio-next.genlayer.com/api`.
+The frontend targets GenLayer Studio Next, chain `61997`, at
+`https://studio-next.genlayer.com/api`.
 
 ## Routes
 
 - `/markets`
-- `/markets/$id`
+- `/markets/cross/$id`
+- `/markets/crypto/$id`
 - `/create`
 - `/portfolio`
 - `/how-it-works`
 
-The root route redirects to `/markets`; unsupported routes use the branded not-found view.
+The root route redirects to `/markets`; unsupported routes use the branded
+not-found view.
 
 ## Development
 
@@ -35,8 +44,11 @@ Quality checks:
 
 ```bash
 bunx tsc --noEmit
+bun run test:integration
 bun run lint
 bun run build
 ```
 
-Bitget candle data is used only for the informational live chart. Official market state, pools, positions, settlement, evidence, claims, and refunds remain contract-controlled.
+External chart data is informational only. Official market state, pools,
+positions, settlement, evidence, claims, and refunds remain contract-
+controlled.
