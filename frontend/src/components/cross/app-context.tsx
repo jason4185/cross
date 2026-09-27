@@ -1,8 +1,8 @@
 import { createContext, useContext, type ReactNode } from "react";
-import { useCrossConfig } from "@/lib/cross/queries";
+import { useCrossConfig, useCryptoConfig } from "@/lib/cross/queries";
 import { WalletProvider, useWallet } from "@/lib/cross/wallet";
 import { CrossTransactionProvider } from "@/lib/cross/transaction-state";
-import type { CrossConfig } from "@/lib/cross/types";
+import type { CrossConfig, CryptoConfig } from "@/lib/cross/types";
 
 interface AppState {
   address: string | null;
@@ -14,6 +14,9 @@ interface AppState {
   config?: CrossConfig | undefined;
   configLoading: boolean;
   configError: Error | null;
+  cryptoConfig?: CryptoConfig | undefined;
+  cryptoConfigLoading: boolean;
+  cryptoConfigError: Error | null;
   connectWallet: () => Promise<string>;
   disconnectWallet: () => void;
   switchWalletAccount: () => Promise<string>;
@@ -25,6 +28,7 @@ const AppContext = createContext<AppState | null>(null);
 function CrossRuntime({ children }: { children: ReactNode }) {
   const wallet = useWallet();
   const config = useCrossConfig();
+  const cryptoConfig = useCryptoConfig();
   return (
     <AppContext.Provider
       value={{
@@ -37,6 +41,10 @@ function CrossRuntime({ children }: { children: ReactNode }) {
         config: config.data,
         configLoading: config.isLoading,
         configError: config.error instanceof Error && !config.data ? config.error : null,
+        cryptoConfig: cryptoConfig.data,
+        cryptoConfigLoading: cryptoConfig.isLoading,
+        cryptoConfigError:
+          cryptoConfig.error instanceof Error && !cryptoConfig.data ? cryptoConfig.error : null,
         connectWallet: wallet.connectWallet,
         disconnectWallet: wallet.disconnectWallet,
         switchWalletAccount: wallet.switchWalletAccount,

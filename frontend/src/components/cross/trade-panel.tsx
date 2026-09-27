@@ -8,18 +8,25 @@ import { Panel } from "./primitives";
 import { useCross } from "./app-context";
 import { formatCrossError } from "@/lib/cross/errors";
 import { crossContract, safeCrossWrite } from "@/lib/cross/contract";
+import { cryptoContract } from "@/lib/cross/crypto-contract";
 import { GEN_WEI, formatGen, parseGen } from "@/lib/cross/format";
-import { useCrossMyPosition } from "@/lib/cross/queries";
+import { validStake } from "@/lib/cross/identity";
+import { useMyPosition } from "@/lib/cross/queries";
 import type { Market, Outcome, Position } from "@/lib/cross/types";
 
 export function TradePanel({ market }: { market: Market }) {
-  const { connected, connectWallet, balanceWei, config } = useCross();
-  const positionQuery = useCrossMyPosition(market.id);
+  const { connected, connectWallet, balanceWei, config, cryptoConfig } = useCross();
+  const positionQuery = useMyPosition(market.source, market.id);
   const position = positionQuery.data;
-  const [side, setSide] = useState<Outcome>(position?.side ?? "INDICES");
+  const [side, setSide] = useState<Outcome>(
+    position?.side ?? market.allowedOutcomes[0] ?? "INDICES",
+  );
   const [amount, setAmount] = useState("");
-  const minimum = config?.minimumBetWei ?? GEN_WEI;
-  const maximum = config?.maximumBetWei ?? 70n * GEN_WEI;
+  const minimum =
+    (market.source === "CRYPTO" ? cryptoConfig?.minimumBetWei : config?.minimumBetWei) ?? GEN_WEI;
+  const maximum =
+    (market.source === "CRYPTO" ? cryptoConfig?.maximumBetWei : config?.maximumBetWei) ??
+    70n * GEN_WEI;
   const remaining =
     maximum - (position?.stakeWei ?? 0n) > 0n ? maximum - (position?.stakeWei ?? 0n) : 0n;
   useEffect(() => {
@@ -32,12 +39,8 @@ export function TradePanel({ market }: { market: Market }) {
       return null;
     }
   }, [amount]);
-  const valid = Boolean(
-    parsed !== null &&
-    parsed >= minimum &&
-    parsed <= remaining &&
-    (balanceWei === null || parsed <= balanceWei),
-  );
+  const valid =
+    parsed !== null && validStake(parsed, minimum, position?.stakeWei ?? 0n, maximum, balanceWei);
   const unresolved =
     market.contractState === "OPEN" || market.contractState === "SETTLEMENT_PENDING";
   const canSettle =
@@ -62,7 +65,7 @@ export function TradePanel({ market }: { market: Market }) {
       toast.error("Enter a valid GEN amount.");
       return false;
     }
-    if (parsed < minimum) {
+    if (parsed <= 0n || (!position?.exists && parsed < minimum)) {
       toast.error(`The minimum stake is ${formatGen(minimum)}.`);
       return false;
     }
@@ -136,14 +139,20 @@ export function TradePanel({ market }: { market: Market }) {
       {market.contractState === "OPEN" && market.bettingOpen && (
         <>
           <div className="mt-5 grid grid-cols-2 gap-2">
-            {(["INDICES", "FX"] as Outcome[]).map((item) => (
+            {market.allowedOutcomes.map((item) => (
               <Button
                 key={item}
                 onClick={() => setSide(item)}
                 disabled={Boolean(position?.side && position.side !== item)}
-                variant={side === item ? (item === "INDICES" ? "default" : "secondary") : "outline"}
+                variant={
+                  side === item
+                    ? item === market.allowedOutcomes[0]
+                      ? "default"
+                      : "secondary"
+                    : "outline"
+                }
                 className={
-                  side === item && item === "INDICES"
+                  side === item && item === market.allowedOutcomes[0]
                     ? "bg-success text-success-foreground hover:bg-success/90"
                     : side === item
                       ? "border-fx/50 bg-fx/15 text-fx"
@@ -210,7 +219,11 @@ export function TradePanel({ market }: { market: Market }) {
             <Row label="Protocol range" value={`${formatGen(minimum)}–${formatGen(maximum)}`} />
           </div>
           <TransactionAction
-            call={safeCrossWrite(() => crossContract.placeBet(market.id, side))}
+            call={safeCrossWrite(() =>
+              market.source === "CRYPTO"
+                ? cryptoContract.placeBet(market.id, side)
+                : crossContract.placeBet(market.id, side as "INDICES" | "FX"),
+            )}
             userValue={parsed ?? undefined}
             label={position?.side ? "Top Up Stake" : "Place Stake"}
             disabled={!valid}
@@ -231,7 +244,11 @@ export function TradePanel({ market }: { market: Market }) {
 
       {canSettle && (
         <TransactionAction
-          call={safeCrossWrite(() => crossContract.settleMarket(market.id))}
+          call={safeCrossWrite(() =>
+            market.source === "CRYPTO"
+              ? cryptoContract.settleMarket(market.id)
+              : crossContract.settleMarket(market.id),
+          )}
           label={
             market.contractState === "SETTLEMENT_PENDING" ? "Retry settlement" : "Settle Market"
           }
@@ -248,10 +265,13 @@ export function TradePanel({ market }: { market: Market }) {
         )}
       {market.contractState === "SETTLEMENT_PENDING" && !market.deadlineExpired && (
         <SettlementMessage>
-          <p>Settlement is pending a valid 2-of-2 source consensus.</p>
+          <p>
+            Settlement is pending a valid {market.source === "CRYPTO" ? "2-of-3" : "2-of-2"} source
+            consensus.
+          </p>
           <p className="mt-1">
-            Gate and Bitget did not reach 2-of-2 consensus. Settlement can be retried until the
-            deadline.
+            {market.source === "CRYPTO" ? "Binance, Gate, and Bitget" : "Gate and Bitget"} did not
+            reach the required consensus. Settlement can be retried until the deadline.
           </p>
         </SettlementMessage>
       )}
@@ -259,11 +279,15 @@ export function TradePanel({ market }: { market: Market }) {
         <SettlementMessage>
           <p className="font-semibold text-warning">Settlement deadline expired.</p>
           <p className="mt-1">
-            No valid 2-of-2 consensus was reached before the deadline. Finalize the market as
-            inconclusive to enable refunds.
+            No valid {market.source === "CRYPTO" ? "2-of-3" : "2-of-2"} consensus was reached before
+            the deadline. Finalize the market as inconclusive to enable refunds.
           </p>
           <TransactionAction
-            call={safeCrossWrite(() => crossContract.settleMarket(market.id))}
+            call={safeCrossWrite(() =>
+              market.source === "CRYPTO"
+                ? cryptoContract.settleMarket(market.id)
+                : crossContract.settleMarket(market.id),
+            )}
             label="Finalize inconclusive"
           />
         </SettlementMessage>
@@ -274,7 +298,11 @@ export function TradePanel({ market }: { market: Market }) {
           <p className="text-xs text-success">Claimable winnings</p>
           <p className="mt-1 text-2xl font-semibold">{formatGen(claimableAmount)}</p>
           <TransactionAction
-            call={safeCrossWrite(() => crossContract.claim(market.id))}
+            call={safeCrossWrite(() =>
+              market.source === "CRYPTO"
+                ? cryptoContract.claim(market.id)
+                : crossContract.claim(market.id),
+            )}
             label="Claim Winnings"
           />
         </div>
@@ -284,7 +312,11 @@ export function TradePanel({ market }: { market: Market }) {
           <p className="text-xs text-primary">Full refund available</p>
           <p className="mt-1 text-2xl font-semibold">{formatGen(position?.stakeWei)}</p>
           <TransactionAction
-            call={safeCrossWrite(() => crossContract.claimRefund(market.id))}
+            call={safeCrossWrite(() =>
+              market.source === "CRYPTO"
+                ? cryptoContract.claimRefund(market.id)
+                : crossContract.claimRefund(market.id),
+            )}
             label="Claim Refund"
           />
         </div>

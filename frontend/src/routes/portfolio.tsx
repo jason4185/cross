@@ -15,8 +15,10 @@ import { CrossReadError } from "@/components/cross/read-error";
 import { EmptyState, OutcomeChip, Panel, StatusBadge } from "@/components/cross/primitives";
 import { TransactionAction } from "@/components/cross/transaction-action";
 import { crossContract, safeCrossWrite } from "@/lib/cross/contract";
+import { cryptoContract } from "@/lib/cross/crypto-contract";
 import { formatGen, formatUtc, windowLabel } from "@/lib/cross/format";
-import { useCrossClaimable, useCrossPortfolio } from "@/lib/cross/queries";
+import { marketIdentityKey } from "@/lib/cross/identity";
+import { useAllClaimable, useAllPortfolio } from "@/lib/cross/queries";
 import type { PortfolioPosition } from "@/lib/cross/types";
 
 export const Route = createFileRoute("/portfolio")({
@@ -34,10 +36,16 @@ type PortfolioTab = "active" | "claimable" | "history";
 function PortfolioPage() {
   const { connected, connectWallet } = useCross();
   const [tab, setTab] = useState<PortfolioTab>("active");
-  const positions = useCrossPortfolio();
-  const claimable = useCrossClaimable();
+  const positions = useAllPortfolio();
+  const claimable = useAllClaimable();
   const claimableByMarket = useMemo(
-    () => new Map((claimable.data ?? []).map((item) => [item.market.id, item])),
+    () =>
+      new Map(
+        (claimable.data ?? []).map((item) => [
+          marketIdentityKey(item.source, item.market.id),
+          item,
+        ]),
+      ),
     [claimable.data],
   );
   const claimableFromPositions = useMemo(
@@ -45,12 +53,13 @@ function PortfolioPage() {
       new Map(
         (positions.data ?? [])
           .filter((item) => item.position.claimable || item.position.refundable)
-          .map((item) => [item.market.id, item]),
+          .map((item) => [marketIdentityKey(item.source, item.market.id), item]),
       ),
     [positions.data],
   );
-  const claimableForMarket = (marketId: number) =>
-    claimableByMarket.get(marketId) ?? claimableFromPositions.get(marketId);
+  const claimableForMarket = (source: "CROSS" | "CRYPTO", marketId: number) =>
+    claimableByMarket.get(marketIdentityKey(source, marketId)) ??
+    claimableFromPositions.get(marketIdentityKey(source, marketId));
   const totalStaked = (positions.data ?? []).reduce(
     (sum, item) => sum + item.position.stakeWei,
     0n,
@@ -68,8 +77,8 @@ function PortfolioPage() {
   ).length;
   const visible = (positions.data ?? []).filter((item) => {
     if (tab === "active") return item.market.contractState === "OPEN";
-    if (tab === "claimable") return Boolean(claimableForMarket(item.market.id));
-    return item.market.contractState !== "OPEN" && !claimableForMarket(item.market.id);
+    if (tab === "claimable") return Boolean(claimableForMarket(item.source, item.market.id));
+    return item.market.contractState !== "OPEN" && !claimableForMarket(item.source, item.market.id);
   });
   const positionsReadError = positions.error && !positions.data ? positions.error : null;
   const claimableReadError = claimable.error && !claimable.data ? claimable.error : null;
@@ -172,7 +181,7 @@ function PortfolioPage() {
               <PositionCard
                 key={item.market.id}
                 item={item}
-                claimable={claimableForMarket(item.market.id)}
+                claimable={claimableForMarket(item.source, item.market.id)}
               />
             ))}
           </div>
@@ -204,7 +213,18 @@ function PositionCard({
             <StatusBadge state={market.state} />
           </div>
           <h2 className="mt-2 text-base font-semibold">
-            INDICES <span className="text-muted-foreground">vs</span> FX
+            {market.source === "CROSS" ? (
+              <>
+                INDICES <span className="text-muted-foreground">vs</span> FX
+              </>
+            ) : (
+              <>
+                {market.subject}{" "}
+                <span className="text-muted-foreground">
+                  {market.marketType === "UP_DOWN" ? "UP / DOWN" : "DOMINANCE"}
+                </span>
+              </>
+            )}
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
             {windowLabel(market.start, market.end)}
@@ -230,19 +250,34 @@ function PositionCard({
         </div>
         <div className="flex flex-wrap gap-2 lg:justify-end">
           <Button asChild variant="outline" size="sm">
-            <Link to="/markets/$id" search={{ q: "" }} params={{ id: String(market.id) }}>
+            <Link
+              to="/markets/$source/$id"
+              search={{ q: "" }}
+              params={{
+                source: market.source === "CROSS" ? "cross" : "crypto",
+                id: String(market.id),
+              }}
+            >
               View Market <ArrowUpRight />
             </Link>
           </Button>
           {action === "claim" && (
             <TransactionAction
-              call={safeCrossWrite(() => crossContract.claim(market.id))}
+              call={safeCrossWrite(() =>
+                market.source === "CRYPTO"
+                  ? cryptoContract.claim(market.id)
+                  : crossContract.claim(market.id),
+              )}
               label="Claim winnings"
             />
           )}
           {action === "refund" && (
             <TransactionAction
-              call={safeCrossWrite(() => crossContract.claimRefund(market.id))}
+              call={safeCrossWrite(() =>
+                market.source === "CRYPTO"
+                  ? cryptoContract.claimRefund(market.id)
+                  : crossContract.claimRefund(market.id),
+              )}
               label="Claim refund"
             />
           )}

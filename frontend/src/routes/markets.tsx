@@ -8,8 +8,9 @@ import { EmptyState, MarketCard, Panel, useNow } from "@/components/cross/primit
 import { CrossReadError } from "@/components/cross/read-error";
 import { useCross } from "@/components/cross/app-context";
 import { displayMarketState, formatGen } from "@/lib/cross/format";
-import { useCrossConfig, useCrossMarkets, useCrossMyPositions } from "@/lib/cross/queries";
-import type { DisplayMarketState, Market } from "@/lib/cross/types";
+import { marketIdentityKey } from "@/lib/cross/identity";
+import { useAllMarkets, useAllPortfolio, useCrossConfig } from "@/lib/cross/queries";
+import type { DisplayMarketState, Market, MarketType } from "@/lib/cross/types";
 
 export const Route = createFileRoute("/markets")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -49,10 +50,19 @@ const labels: Record<(typeof filters)[number], string> = {
   SETTLED: "Settled",
   INCONCLUSIVE: "Inconclusive",
 };
+const formatFilters: Array<"ALL" | MarketType> = ["ALL", "INDICES_FX", "UP_DOWN", "DOMINANCE"];
+const formatLabels = {
+  ALL: "All",
+  INDICES_FX: "Indices vs FX",
+  UP_DOWN: "Crypto UP/DOWN",
+  DOMINANCE: "Crypto Dominance",
+};
 
 function MarketsPage() {
   const matches = useMatches();
-  return matches.some((match) => match.routeId === "/markets/$id") ? (
+  return matches.some(
+    (match) => match.routeId === "/markets/$id" || match.routeId === "/markets/$source/$id",
+  ) ? (
     <Outlet />
   ) : (
     <MarketsIndexPage />
@@ -60,17 +70,24 @@ function MarketsPage() {
 }
 
 function MarketsIndexPage() {
-  const { configError, configLoading } = useCross();
+  const { configError, configLoading, cryptoConfigError, cryptoConfigLoading } = useCross();
   const configQuery = useCrossConfig();
-  const markets = useCrossMarkets();
-  const positions = useCrossMyPositions(0, 50);
+  const markets = useAllMarkets();
+  const positions = useAllPortfolio(0, 50);
   const now = useNow();
   const search = Route.useSearch();
   const [filter, setFilter] = useState<(typeof filters)[number]>("ALL");
+  const [formatFilter, setFormatFilter] = useState<(typeof formatFilters)[number]>("ALL");
   const [sort, setSort] = useState("soonest");
   const [query, setQuery] = useState(search.q);
   const positionByMarket = useMemo(
-    () => new Map((positions.data ?? []).map((position) => [position.marketId, position])),
+    () =>
+      new Map(
+        (positions.data ?? []).map((item) => [
+          marketIdentityKey(item.source, item.position.marketId),
+          item.position,
+        ]),
+      ),
     [positions.data],
   );
   const list = useMemo(() => {
@@ -78,13 +95,16 @@ function MarketsIndexPage() {
       ...market,
       state: displayMarketState(market.contractState, market.start, market.end, now ?? Date.now()),
       bettingOpen: market.contractState === "OPEN" && (now ?? Date.now()) < market.start,
-      position: positionByMarket.get(market.id),
+      position: positionByMarket.get(marketIdentityKey(market.source, market.id)),
     }));
     return realMarkets
       .filter(
         (market) =>
           (filter === "ALL" || market.state === filter) &&
-          `${market.id} indices fx spy qqq iwm eurusd gbpusd usdjpy`.includes(query.toLowerCase()),
+          (formatFilter === "ALL" || market.marketType === formatFilter) &&
+          `${market.source} ${market.id} ${market.subject} ${market.marketType} indices fx spy qqq iwm eurusd gbpusd usdjpy btc eth sol bnb xrp doge`
+            .toLowerCase()
+            .includes(query.toLowerCase()),
       )
       .sort((a, b) =>
         sort === "newest"
@@ -93,7 +113,7 @@ function MarketsIndexPage() {
             ? compareBigInt(b.totalPoolWei, a.totalPoolWei)
             : a.end - b.end,
       );
-  }, [filter, markets.data, now, positionByMarket, query, sort]);
+  }, [filter, formatFilter, markets.data, now, positionByMarket, query, sort]);
   const totalOpenPool = (markets.data ?? [])
     .filter(
       (market) =>
@@ -115,7 +135,8 @@ function MarketsIndexPage() {
   ];
   const configReadError = !configQuery.data ? (configQuery.error ?? configError) : null;
   const marketsReadError = markets.error && !markets.data ? markets.error : null;
-  const readError = marketsReadError ?? (!markets.data ? configReadError : null);
+  const readError =
+    marketsReadError ?? (!markets.data ? (configReadError ?? cryptoConfigError) : null);
 
   return (
     <PageShell>
@@ -126,11 +147,12 @@ function MarketsIndexPage() {
             1-HOUR CROSS-ASSET MARKETS
           </p>
           <h1 className="mt-3 text-4xl font-semibold sm:text-5xl">
-            Indices <span className="text-muted-foreground">vs</span> FX
+            CROSS markets{" "}
+            <span className="text-muted-foreground">across indices, FX, and crypto</span>
           </h1>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
-            Each market compares equal-weighted basket performance across one exact UTC hour. Stake
-            on the stronger basket, then settle through strict GATE + BITGET consensus.
+            Browse live contract markets across the original INDICES vs FX format, crypto UP/DOWN,
+            and crypto dominance. All pools and results come directly from Studio Next.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Button asChild>
@@ -192,6 +214,22 @@ function MarketsIndexPage() {
               </Button>
             ))}
           </div>
+          <p className="mb-3 mt-6 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+            Market format
+          </p>
+          <div className="flex flex-wrap gap-2 lg:flex-col">
+            {formatFilters.map((item) => (
+              <Button
+                key={item}
+                onClick={() => setFormatFilter(item)}
+                variant={formatFilter === item ? "secondary" : "ghost"}
+                size="sm"
+                className="justify-start"
+              >
+                {formatLabels[item]}
+              </Button>
+            ))}
+          </div>
           <p className="mb-2 mt-6 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
             Sort
           </p>
@@ -218,7 +256,7 @@ function MarketsIndexPage() {
             </div>
             <span className="shrink-0 text-xs text-muted-foreground">{list.length} markets</span>
           </div>
-          {configLoading || markets.isLoading ? (
+          {configLoading || cryptoConfigLoading || markets.isLoading ? (
             <Panel className="flex min-h-56 items-center justify-center p-6 text-sm text-muted-foreground">
               Loading CROSS markets…
             </Panel>

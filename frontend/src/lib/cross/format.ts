@@ -68,6 +68,13 @@ export function formatUtc(timestamp: number, includeDate = true) {
   );
 }
 
+export function formatLocal(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(timestamp);
+}
+
 export function windowLabel(start: number, end: number) {
   const date = new Intl.DateTimeFormat("en-GB", {
     timeZone: "UTC",

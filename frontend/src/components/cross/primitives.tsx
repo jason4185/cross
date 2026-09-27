@@ -50,7 +50,7 @@ export function OutcomeChip({ side, active = false }: { side: Outcome; active?: 
     <span
       className={cn(
         "inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-semibold",
-        side === "INDICES"
+        side === "INDICES" || side === "UP" || side === "BTC" || side === "SOL" || side === "BNB"
           ? "border-success/25 bg-success/8 text-success"
           : "border-fx/25 bg-fx/8 text-fx",
         active && "ring-1 ring-current",
@@ -99,8 +99,7 @@ export function useNow() {
 }
 
 export function MarketCard({ market }: { market: Market }) {
-  const total = market.indicesPoolWei + market.fxPoolWei;
-  const pct = total > 0n ? Number((market.indicesPoolWei * 10_000n) / total) / 100 : 50;
+  const total = market.totalPoolWei;
   const now = useNow();
   const state = displayMarketState(
     market.contractState,
@@ -126,39 +125,45 @@ export function MarketCard({ market }: { market: Market }) {
             <p className="text-[11px] font-medium text-muted-foreground">
               MARKET #{market.id} · {windowLabel(market.start, market.end)}
             </p>
-            <h3 className="mt-2 truncate text-lg font-semibold">
-              INDICES <span className="text-muted-foreground">vs</span> FX
-            </h3>
+            <h3 className="mt-2 truncate text-lg font-semibold">{marketTitle(market)}</h3>
           </div>
           <StatusBadge state={state} />
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] text-muted-foreground">INDICES</span>
-          {["SPY", "QQQ", "IWM"].map((x) => (
-            <span key={x} className="asset-chip indices">
-              {x}
-            </span>
-          ))}
-          <span className="mx-1 text-muted-foreground">/</span>
-          <span className="text-[10px] text-muted-foreground">FX</span>
-          {["EUR", "GBP", "JPY"].map((x) => (
-            <span key={x} className="asset-chip fx">
-              {x}
-            </span>
-          ))}
+          {market.source === "CROSS" ? (
+            <>
+              <span className="text-[10px] text-muted-foreground">INDICES</span>
+              {["SPY", "QQQ", "IWM"].map((x) => (
+                <span key={x} className="asset-chip indices">
+                  {x}
+                </span>
+              ))}
+              <span className="mx-1 text-muted-foreground">/</span>
+              <span className="text-[10px] text-muted-foreground">FX</span>
+              {["EUR", "GBP", "JPY"].map((x) => (
+                <span key={x} className="asset-chip fx">
+                  {x}
+                </span>
+              ))}
+            </>
+          ) : (
+            market.allowedOutcomes.map((outcome) => (
+              <span key={outcome} className="asset-chip indices">
+                {outcome}
+              </span>
+            ))
+          )}
         </div>
         <div className="mt-5">
-          <div className="flex justify-between text-xs">
-            <span className="text-success">
-              INDICES <strong>{formatGen(market.indicesPoolWei, true)}</strong>
-            </span>
-            <span className="text-fx">
-              FX <strong>{formatGen(market.fxPoolWei, true)}</strong>
-            </span>
-          </div>
-          <div className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-muted">
-            <div className="bg-success transition-all" style={{ width: `${pct}%` }} />
-            <div className="flex-1 bg-fx" />
+          <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+            {market.allowedOutcomes.map((outcome) => (
+              <span key={outcome} className="text-muted-foreground">
+                {outcome}{" "}
+                <strong className="text-foreground">
+                  {formatGen(market.outcomePools[outcome] ?? 0n, true)}
+                </strong>
+              </span>
+            ))}
           </div>
         </div>
         <div className="mt-5 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-t border-border pt-4">
@@ -172,13 +177,38 @@ export function MarketCard({ market }: { market: Market }) {
             </p>
           </div>
           <Button asChild size="sm" variant="outline">
-            <Link to="/markets/$id" search={{ q: "" }} params={{ id: String(market.id) }}>
+            <Link
+              to="/markets/$source/$id"
+              search={{ q: "" }}
+              params={{
+                source: market.source === "CROSS" ? "cross" : "crypto",
+                id: String(market.id),
+              }}
+            >
               View <ArrowUpRight />
             </Link>
           </Button>
         </div>
       </div>
     </Panel>
+  );
+}
+
+function marketTitle(market: Market) {
+  if (market.source === "CROSS")
+    return (
+      <>
+        INDICES <span className="text-muted-foreground">vs</span> FX
+      </>
+    );
+  return market.marketType === "UP_DOWN" ? (
+    <>
+      {market.subject} <span className="text-muted-foreground">UP / DOWN</span>
+    </>
+  ) : (
+    <>
+      {market.subject} <span className="text-muted-foreground">DOMINANCE</span>
+    </>
   );
 }
 

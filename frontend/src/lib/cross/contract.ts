@@ -15,12 +15,15 @@ import type {
   SourceEvidence,
   SourceName,
   SourceStatus,
+  CrossOutcome,
+  MarketSource,
 } from "./types";
 
 export type CrossWriteCall = {
   address: `0x${string}`;
   method: string;
   args: CalldataEncodable[];
+  source?: MarketSource;
 };
 
 export function safeCrossWrite(factory: () => CrossWriteCall) {
@@ -87,7 +90,7 @@ function stringValue(value: unknown, field: string) {
   return value;
 }
 
-function outcomeValue(value: unknown): Outcome | undefined {
+function outcomeValue(value: unknown): CrossOutcome | undefined {
   return value === "INDICES" || value === "FX" ? value : undefined;
 }
 
@@ -134,7 +137,14 @@ function mapMarket(value: unknown, now = Date.now()): Market {
   const start = secondsToMilliseconds(raw["market_start"], "market start");
   const end = secondsToMilliseconds(raw["market_end"], "market end");
   const state = contractState(raw["state"]);
+  const indicesPoolWei = bigintValue(raw["indices_pool"], "INDICES pool");
+  const fxPoolWei = bigintValue(raw["fx_pool"], "FX pool");
   return {
+    source: "CROSS",
+    marketType: "INDICES_FX",
+    subject: "INDICES_FX",
+    durationSeconds: safeNumber(raw["duration_seconds"], "duration"),
+    allowedOutcomes: ["INDICES", "FX"],
     id: safeNumber(raw["market_id"] ?? raw["id"], "market id"),
     start,
     end,
@@ -145,8 +155,9 @@ function mapMarket(value: unknown, now = Date.now()): Market {
     winner: outcomeValue(raw["winner"]),
     reason: typeof raw["reason"] === "string" ? raw["reason"] : "",
     totalPoolWei: bigintValue(raw["total_pool"] ?? raw["market_pool"], "total pool"),
-    indicesPoolWei: bigintValue(raw["indices_pool"], "INDICES pool"),
-    fxPoolWei: bigintValue(raw["fx_pool"], "FX pool"),
+    indicesPoolWei,
+    fxPoolWei,
+    outcomePools: { INDICES: indicesPoolWei, FX: fxPoolWei },
     winningPoolWei: bigintValue(raw["winning_pool"], "winning pool"),
     claimedPoolWei: bigintValue(raw["claimed_pool"], "claimed pool"),
     refundedPoolWei: bigintValue(raw["refunded_pool"], "refunded pool"),
@@ -302,7 +313,7 @@ export const crossContract = {
     const raw = record(await read("get_config"));
     if (raw["protocol"] !== "CROSS V1") throw new Error("The connected contract is not CROSS V1.");
     const outcomes = Array.isArray(raw["outcomes"])
-      ? raw["outcomes"].filter((item): item is Outcome => item === "INDICES" || item === "FX")
+      ? raw["outcomes"].filter((item): item is CrossOutcome => item === "INDICES" || item === "FX")
       : [];
     if (outcomes.join(",") !== "INDICES,FX")
       throw new Error("The CROSS contract returned an invalid outcome configuration.");
@@ -355,7 +366,7 @@ export const crossContract = {
   async outcomes(): Promise<Outcome[]> {
     const value = await read("outcomes");
     if (!Array.isArray(value)) throw new Error("The CROSS contract returned invalid outcomes.");
-    return value.filter((item): item is Outcome => item === "INDICES" || item === "FX");
+    return value.filter((item): item is CrossOutcome => item === "INDICES" || item === "FX");
   },
   async getMarket(marketId: number) {
     try {

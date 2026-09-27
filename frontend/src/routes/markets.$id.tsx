@@ -28,7 +28,7 @@ import { contractErrorText, formatCrossError } from "@/lib/cross/errors";
 import { LIVE_ASSETS, type LiveAssetKey } from "@/lib/cross/live-market-data";
 import { useLiveMarketData } from "@/lib/cross/use-live-market-data";
 import { useCrossEvidence, useCrossMarket, useCrossMyPosition } from "@/lib/cross/queries";
-import type { Market, SourceEvidence } from "@/lib/cross/types";
+import type { Market, Outcome, SourceEvidence } from "@/lib/cross/types";
 
 export const Route = createFileRoute("/markets/$id")({
   head: ({ params }) => ({
@@ -45,12 +45,15 @@ export const Route = createFileRoute("/markets/$id")({
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
-  component: MarketDetail,
+  component: LegacyMarketDetail,
 });
 
-function MarketDetail() {
+function LegacyMarketDetail() {
   const { id } = Route.useParams();
-  const marketId = Number(id);
+  return <MarketDetail source="CROSS" marketId={Number(id)} />;
+}
+
+export function MarketDetail({ source, marketId }: { source: "CROSS"; marketId: number }) {
   const now = useNow();
   const marketQuery = useCrossMarket(marketId);
   const positionQuery = useCrossMyPosition(marketId);
@@ -425,7 +428,7 @@ function LivePerformancePanel({
   lastUpdated: number | null;
   error: string | null;
   isBeforeStart: boolean;
-  officialWinner: "INDICES" | "FX" | undefined;
+  officialWinner: Outcome | undefined;
   onRetry: () => void;
 }) {
   const isOfficiallySettled = marketState === "SETTLED";

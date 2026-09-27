@@ -9,6 +9,7 @@
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "lint": "eslint .",
+    "test:integration": "node --experimental-strip-types --test src/lib/cross/identity.test.ts",
     "format": "prettier --write ."
   },
   "overrides": {

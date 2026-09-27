@@ -4,6 +4,9 @@ export const CROSS_RPC_URL = "https://studio-next.genlayer.com/api";
 export const CROSS_CHAIN_ID = 61997;
 export const CROSS_CONTRACT_ADDRESS = import.meta.env["VITE_CROSS_CONTRACT_ADDRESS"] as
   string | undefined;
+export const CROSS_CRYPTO_CONTRACT_ADDRESS = import.meta.env[
+  "VITE_CROSS_CRYPTO_CONTRACT_ADDRESS"
+] as string | undefined;
 
 const ADDRESS_PATTERN = /^0x[a-fA-F0-9]{40}$/;
 
@@ -11,6 +14,10 @@ export const CROSS_CONFIGURATION_ERROR =
   CROSS_CONTRACT_ADDRESS && ADDRESS_PATTERN.test(CROSS_CONTRACT_ADDRESS)
     ? null
     : "CROSS contract configuration is missing or malformed. Set VITE_CROSS_CONTRACT_ADDRESS to the deployed Studio Next address.";
+export const CROSS_CRYPTO_CONFIGURATION_ERROR =
+  CROSS_CRYPTO_CONTRACT_ADDRESS && ADDRESS_PATTERN.test(CROSS_CRYPTO_CONTRACT_ADDRESS)
+    ? null
+    : "CROSS Crypto contract configuration is missing or malformed. Set VITE_CROSS_CRYPTO_CONTRACT_ADDRESS to the deployed Studio Next address.";
 
 export const CROSS_CHAIN: typeof studioDevnet = {
   ...studioDevnet,
@@ -39,4 +46,13 @@ export function getCrossContractAddress(): `0x${string}` {
     throw new Error(CROSS_CONFIGURATION_ERROR ?? "CROSS contract address is unavailable.");
   }
   return CROSS_CONTRACT_ADDRESS as `0x${string}`;
+}
+
+export function getCrossCryptoContractAddress(): `0x${string}` {
+  if (CROSS_CRYPTO_CONFIGURATION_ERROR || !CROSS_CRYPTO_CONTRACT_ADDRESS) {
+    throw new Error(
+      CROSS_CRYPTO_CONFIGURATION_ERROR ?? "CROSS Crypto contract address is unavailable.",
+    );
+  }
+  return CROSS_CRYPTO_CONTRACT_ADDRESS as `0x${string}`;
 }

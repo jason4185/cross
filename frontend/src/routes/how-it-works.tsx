@@ -11,7 +11,7 @@ export const Route = createFileRoute("/how-it-works")({
       { title: "How CROSS works" },
       {
         name: "description",
-        content: "Learn how CROSS compares INDICES and FX basket performance.",
+        content: "Learn how CROSS settles indices, FX, and crypto prediction markets.",
       },
     ],
   }),
@@ -58,60 +58,75 @@ function HowItWorksPage() {
           <p className="text-[11px] font-semibold tracking-[0.18em] text-primary">PROTOCOL GUIDE</p>
           <h1 className="mt-3 text-3xl font-semibold sm:text-5xl">How CROSS works</h1>
           <p className="mt-4 text-sm leading-6 text-muted-foreground sm:text-base">
-            CROSS is a pooled prediction market asking which fixed basket performs better over one
-            exact UTC hour: INDICES or FX.
+            CROSS is one pooled prediction-market product. It supports the original INDICES vs FX
+            market plus crypto UP/DOWN and crypto DOMINANCE markets.
           </p>
         </div>
       </section>
 
       <div className="mt-8 grid gap-5 lg:grid-cols-2">
-        <InfoPanel eyebrow="01 · Market creation" title="One canonical next-hour window">
+        <InfoPanel eyebrow="05 · Dominance" title="Highest exact return wins">
           <p>
-            A CROSS market may be created only for the next exact UTC hour. The frontend calculates{" "}
-            <code>expectedStart = ((currentUnixSeconds // 3600) + 1) * 3600</code>; there is no
-            arbitrary time selector.
+            DOMINANCE compares percentage returns using exact rational arithmetic. A least-negative
+            return wins when every asset falls, and an exact tie produces no user-resolvable winner.
+          </p>
+        </InfoPanel>
+        <InfoPanel eyebrow="06 · Inconclusive" title="Fail closed, then refund">
+          <p>
+            If sources disagree, evidence is unavailable, or a consensus winner has zero backing,
+            the contract remains retryable until the deadline, then becomes INCONCLUSIVE and refunds
+            original stakes.
+          </p>
+        </InfoPanel>
+      </div>
+
+      <div className="mt-8 grid gap-5 lg:grid-cols-2">
+        <InfoPanel eyebrow="01 · Market formats" title="Three CROSS market formats">
+          <p>
+            CROSS includes INDICES vs FX, crypto UP/DOWN for BTC, ETH, SOL, BNB, XRP, and DOGE, and
+            crypto DOMINANCE for MAJORS or LARGE_CAP_ALTS. The contract supplies the allowed
+            outcomes.
           </p>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <Rule label="Duration" value="3,600 seconds" />
+            <Rule label="Durations" value="1H or 2H for crypto" />
             <Rule label="Timezone" value="UTC" />
           </div>
         </InfoPanel>
-        <InfoPanel eyebrow="02 · Betting" title="Choose one side, then top up">
+        <InfoPanel eyebrow="02 · Market creation" title="One canonical next-hour window">
           <p>
-            Stake at least 1 GEN and no more than 70 GEN cumulatively per wallet per market. Once
-            selected, a wallet can only top up that same side.
+            Every market is created for the next exact UTC hour in UTC. There is no arbitrary time
+            selector, and availability is checked against the deployed contract.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <OutcomeChip side="INDICES" />
             <span className="text-xs text-muted-foreground">SPY / QQQ / IWM</span>
-            <OutcomeChip side="FX" />
-            <span className="text-xs text-muted-foreground">EURUSD / GBPUSD / USDJPY</span>
+            <OutcomeChip side="UP" />
+            <span className="text-xs text-muted-foreground">UP/DOWN or asset dominance</span>
           </div>
         </InfoPanel>
-        <InfoPanel eyebrow="03 · Performance" title="Equal-weighted basket returns">
+        <InfoPanel eyebrow="03 · Betting" title="Choose one side, then top up">
           <p>
-            Each basket uses the arithmetic mean of its three constituent returns from the exact
-            opening and closing candles. Normal return is <code>(close - open) / open</code>.
+            Stake at least 1 GEN for a new position and no more than 70 GEN cumulatively per wallet
+            per market. Same-side top-ups are allowed; switching sides is blocked.
           </p>
           <div className="mt-4 rounded-md border border-fx/25 bg-fx/8 p-4 text-xs leading-5 text-fx">
-            <strong>JPY normalization:</strong> USDJPY is quoted in the opposite direction, so CROSS
-            uses <code>(open / close) - 1</code>. Positive JPY return means JPY strengthened against
-            USD.
+            Crypto top-ups may be below 1 GEN after the wallet already has a position.
           </div>
         </InfoPanel>
-        <InfoPanel eyebrow="04 · Sources" title="Independent strict 2-of-2 consensus">
+        <InfoPanel eyebrow="04 · Sources" title="Independent strict 2-of-3 crypto consensus">
           <p>
-            GATE and BITGET each fetch all six required candles and independently calculate both
-            complete basket verdicts. Prices and returns are never mixed across sources.
+            Binance, Gate, and Bitget independently fetch complete market-candle evidence. Crypto
+            settlement requires two matching source results; prices are never mixed across sources.
           </p>
-          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            <Source label="BINANCE" />
             <Source label="GATE" />
             <Source label="BITGET" />
           </div>
           <p className="mt-3 text-xs text-muted-foreground">
             Settlement requires{" "}
-            <strong className="text-foreground">GATE winner == BITGET winner</strong>. Disagreement,
-            ties, or invalid evidence stays retryable.
+            <strong className="text-foreground">two of three winners must match</strong>. For 2H,
+            exactly two consecutive 1H candles are used: first open to second close.
           </p>
         </InfoPanel>
       </div>

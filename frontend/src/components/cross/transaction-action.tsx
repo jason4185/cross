@@ -6,7 +6,6 @@ import { formatCrossError } from "@/lib/cross/errors";
 import { formatGen } from "@/lib/cross/format";
 import { useInvalidateCross } from "@/lib/cross/queries";
 import type { CrossWriteCall } from "@/lib/cross/contract";
-import type { Outcome } from "@/lib/cross/types";
 import { useCrossTransactionActivity } from "@/lib/cross/transaction-context";
 import { CrossTransactionDialog } from "./transaction-dialog";
 import { toast } from "sonner";
@@ -70,6 +69,7 @@ export function TransactionAction({
         address: call.address,
         method: call.method,
         args: [...call.args],
+        ...(call.source === undefined ? {} : { source: call.source }),
       },
       ...(userValue === undefined ? {} : { userValue }),
       ...(onSuccess === undefined ? {} : { onSuccess }),
@@ -173,7 +173,7 @@ function successCopy(transaction: ActiveTransaction) {
       return "The market was created successfully.";
     case "place_bet": {
       const outcome = transaction.call.args[1];
-      const side: Outcome = outcome === "FX" ? "FX" : "INDICES";
+      const side = typeof outcome === "string" ? outcome : "the selected side";
       const amount =
         transaction.userValue === undefined ? "Your" : formatGen(transaction.userValue);
       return `Your ${amount === "Your" ? "" : `${amount} `}${side} stake was accepted.`;
